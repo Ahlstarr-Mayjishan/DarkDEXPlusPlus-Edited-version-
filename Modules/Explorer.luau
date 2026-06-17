@@ -7,7 +7,7 @@
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, ScriptViewer, ModelViewer, ScriptRelations, RemoteUsageMap, Notebook -- Major Apps
+local Explorer, Properties, ScriptViewer, ModelViewer, ScriptRelations, RemoteUsageMap, ObjectLinks, Notebook -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -32,6 +32,7 @@ local function initAfterMain()
 	ModelViewer = Apps.ModelViewer
 	ScriptRelations = Apps.ScriptRelations
 	RemoteUsageMap = Apps.RemoteUsageMap
+	ObjectLinks = Apps.ObjectLinks
 	Notebook = Apps.Notebook
 end
 
@@ -909,6 +910,7 @@ local function main()
 
 		if expanded == Explorer.SearchExpanded then context:AddRegistered("CLEAR_SEARCH_AND_JUMP_TO") end
 		if env.setclipboard then context:AddRegistered("COPY_PATH") end
+		context:AddRegistered("FIND_OBJECT_LINKS", #sList ~= 1 or not ObjectLinks)
 		context:AddRegistered("INSERT_OBJECT")
 		context:AddRegistered("SAVE_INST")
 		-- context:AddRegistered("CALL_FUNCTION")
@@ -1443,6 +1445,11 @@ local function main()
 		context:Register("VIEW_REMOTE_USAGE",{Name = "Remote Usage Map", IconMap = Explorer.MiscIcons, Icon = "ExploreData", DisabledIcon = "Empty", OnClick = function()
 			local remote = selection.List[1] and selection.List[1].Obj
 			if remote and RemoteUsageMap then RemoteUsageMap.ShowForRemote(remote) end
+		end})
+
+		context:Register("FIND_OBJECT_LINKS",{Name = "Find Links / References", IconMap = Explorer.MiscIcons, Icon = "ExploreData", DisabledIcon = "Empty", OnClick = function()
+			local obj = selection.List[1] and selection.List[1].Obj
+			if obj and ObjectLinks then ObjectLinks.ShowForObject(obj) end
 		end})
 
 		context:Register("COPY_API_PAGE",{Name = "Copy Roblox API Page URL", IconMap = Explorer.MiscIcons, Icon = "Reference", OnClick = function()

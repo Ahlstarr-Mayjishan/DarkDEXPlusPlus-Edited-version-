@@ -104,6 +104,14 @@ local function main()
 		return success and fresh == true
 	end
 
+	local function hasCachedFile(scriptInstance)
+		if not env.DecompileCache or not env.DecompileCache.HasCachedFile then
+			return hasFreshCache(scriptInstance)
+		end
+		local success, cachedFile = pcall(env.DecompileCache.HasCachedFile, scriptInstance)
+		return success and cachedFile == true
+	end
+
 	local function clearResults()
 		if not resultsFrame then return end
 		for _, child in pairs(resultsFrame:GetChildren()) do
@@ -256,13 +264,13 @@ local function main()
 				setStatus(("Indexing: %d / %d (%.1f%%) | cached %d | new %d | failed %d"):format(i, total, percent, cached, decompiled, failed))
 
 				local key = getScriptKey(scriptInstance)
-				if key and indexedKeys[key] and hasFreshCache(scriptInstance) then
+				if key and indexedKeys[key] and hasCachedFile(scriptInstance) then
 					cached += 1
 					task.wait()
 					continue
 				end
 
-				if hasFreshCache(scriptInstance) then
+				if hasCachedFile(scriptInstance) then
 					if key then indexedKeys[key] = true end
 					cached += 1
 					task.wait()

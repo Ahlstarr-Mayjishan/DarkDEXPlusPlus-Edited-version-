@@ -87,7 +87,7 @@ end
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, RuntimeInspector--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, RuntimeInspector--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -226,7 +226,7 @@ end
 Main = (function()
 	local Main = {}
 
-	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","CodeSearch","ScriptRelations","RemoteUsageMap","RuntimeInspector"}
+	Main.ModuleList = {"Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","CodeSearch","ScriptRelations","RemoteUsageMap","ObjectLinks","RuntimeInspector"}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
 	Main.MissingEnv = {}
@@ -502,6 +502,7 @@ Main = (function()
 		CodeSearch = Apps.CodeSearch
 		ScriptRelations = Apps.ScriptRelations
 		RemoteUsageMap = Apps.RemoteUsageMap
+		ObjectLinks = Apps.ObjectLinks
 		RuntimeInspector = Apps.RuntimeInspector
 		
 		
@@ -518,6 +519,7 @@ Main = (function()
 			CodeSearch = CodeSearch,
 			ScriptRelations = ScriptRelations,
 			RemoteUsageMap = RemoteUsageMap,
+			ObjectLinks = ObjectLinks,
 			RuntimeInspector = RuntimeInspector
 			--SecretServicePanel = SecretServicePanel,
 		}
@@ -914,12 +916,12 @@ Main = (function()
 				return hashString(bytecode)
 			end
 
-			local function getInfo(script_instance)
+			local function getInfo(script_instance, skipHash)
 				if typeof(script_instance) ~= "Instance" then return nil end
 				local key = getScriptKey(script_instance)
 				return {
 					Key = key,
-					Hash = getBytecodeHash(script_instance),
+					Hash = skipHash and nil or getBytecodeHash(script_instance),
 					File = key .. ".lua",
 					Path = getScriptPath(script_instance),
 					Name = script_instance.Name,
@@ -942,15 +944,26 @@ Main = (function()
 				loadMetadata()
 				return metadata.Scripts, placeDir
 			end
+			cache.HasCachedFile = function(script_instance)
+				loadMetadata()
+				if not ensureCacheFolders() then return false end
+				local info = getInfo(script_instance, true)
+				if not info then return false end
+				local entry = metadata.Scripts[info.Key]
+				if not entry then return false end
+				local path = placeDir .. "/" .. tostring(entry.File or info.File)
+				return env.isfile(path)
+			end
 			cache.HasFresh = function(script_instance)
 				loadMetadata()
 				if not ensureCacheFolders() then return false end
 
 				local info = getInfo(script_instance)
-				if not info or not info.Hash then return false end
+				if not info then return false end
 
 				local entry = metadata.Scripts[info.Key]
-				if not entry or entry.Hash ~= info.Hash then return false end
+				if not entry then return false end
+				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then return false end
 
 				local path = placeDir .. "/" .. tostring(entry.File or info.File)
 				return env.isfile(path)
@@ -960,11 +973,11 @@ Main = (function()
 				if not ensureCacheFolders() then return nil, "Filesystem APIs are unavailable." end
 
 				local info = getInfo(script_instance)
-				if not info or not info.Hash then return nil, "Bytecode hash is unavailable." end
+				if not info then return nil, "Script cache info is unavailable." end
 
 				local entry = metadata.Scripts[info.Key]
 				if not entry then return nil, "No cached source." end
-				if entry.Hash ~= info.Hash then return nil, "Cached source is stale." end
+				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then return nil, "Cached source is stale." end
 
 				local path = placeDir .. "/" .. tostring(entry.File or info.File)
 				if not env.isfile(path) then return nil, "Cached source file is missing." end
@@ -980,7 +993,7 @@ Main = (function()
 				if not ensureCacheFolders() then return false end
 
 				local info = getInfo(script_instance)
-				if not info or not info.Hash then return false end
+				if not info then return false end
 
 				local path = placeDir .. "/" .. info.File
 				local writeSuccess = pcall(env.writefile, path, source)
@@ -2160,6 +2173,8 @@ Main = (function()
 
 		Main.CreateApp({Name = "Remote Usage", IconMap = Main.LargeIcons, Icon = "Output", Window = RemoteUsageMap.Window})
 
+		Main.CreateApp({Name = "Object Links", IconMap = Main.LargeIcons, Icon = "Watcher", Window = ObjectLinks.Window})
+
 		Main.CreateApp({Name = "Runtime Inspector", IconMap = Main.LargeIcons, Icon = "Watcher", Window = RuntimeInspector.Window})
 
 		--Main.CreateApp({Name = "Secret Service Panel", IconMap = Main.LargeIcons, Icon = "Output", Window = SecretServicePanel.Window})
@@ -2301,6 +2316,7 @@ Main = (function()
 		CodeSearch.Init()
 		ScriptRelations.Init()
 		RemoteUsageMap.Init()
+		ObjectLinks.Init()
 		RuntimeInspector.Init()
 		--SecretServicePanel.Init()
 		
