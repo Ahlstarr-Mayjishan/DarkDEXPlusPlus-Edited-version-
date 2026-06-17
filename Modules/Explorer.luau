@@ -47,6 +47,7 @@ local function main()
 	local getTextSize = service.TextService.GetTextSize
 	local updateDebounce,refreshDebounce = false,false
 	local nilNode = {Obj = Instance.new("Folder")}
+	local capturedNode = {Obj = Instance.new("Folder")}
 	local idCounter = 0
 	local scrollV,scrollH,clipboard
 	local renameBox,renamingNode,searchFunc
@@ -406,7 +407,7 @@ local function main()
 				if useNameWidth then
 					local nameWidth = n.NameWidth
 					if not nameWidth then
-						local objName = tostring(n.Obj)
+						local objName = Explorer.GetCleanNodeName(n.Obj)
 						nameWidth = nameCache[objName]
 						if not nameWidth then
 							nameWidth = getTextSize(textServ,objName,14,font,size).X
@@ -437,6 +438,15 @@ local function main()
 				if expanded[nilNode] then
 					recur(nilNode,2)
 				end
+			end
+		end
+
+		-- Captured Templates
+		if not (isSearching and not searchResults[capturedNode]) then
+			tree[count] = capturedNode
+			count = count + 1
+			if expanded[capturedNode] then
+				recur(capturedNode,2)
 			end
 		end
 
@@ -660,6 +670,81 @@ local function main()
 		return newEntry
 	end
 
+	Explorer.GetCleanNodeName = function(obj)
+		if not obj then return "" end
+		if obj == nilNode.Obj then
+			return "Nil Instances"
+		elseif obj == capturedNode.Obj then
+			return "Captured Templates"
+		end
+
+		local name = obj.Name
+
+		-- Check if name is blank, contains only spaces, tabs, newlines or control chars
+		local isObfuscated = false
+		if #name == 0 then
+			isObfuscated = true
+		elseif string.match(name, "^%s*$") then
+			isObfuscated = true
+		elseif string.match(name, "[%c%z]") then -- control characters or null bytes
+			isObfuscated = true
+		end
+
+		if not isObfuscated then
+			return name
+		end
+
+		-- Count child types for classification
+		local children = obj:GetChildren()
+		local toolCount, scriptCount, remoteCount, partCount, moduleCount = 0, 0, 0, 0, 0
+		for i = 1, #children do
+			local child = children[i]
+			if child:IsA("Tool") or child:IsA("HopperBin") then
+				toolCount += 1
+			elseif child:IsA("ModuleScript") then
+				moduleCount += 1
+			elseif child:IsA("LuaSourceContainer") then
+				scriptCount += 1
+			elseif child:IsA("RemoteEvent") or child:IsA("RemoteFunction") or child:IsA("UnreliableRemoteEvent") then
+				remoteCount += 1
+			elseif child:IsA("BasePart") then
+				partCount += 1
+			end
+		end
+
+		local tag = "Obfuscated Folder"
+		if toolCount > 0 and toolCount >= scriptCount and toolCount >= remoteCount and toolCount >= moduleCount then
+			tag = "Asset: Tools"
+		elseif scriptCount > 0 and scriptCount >= toolCount and scriptCount >= remoteCount and scriptCount >= moduleCount then
+			tag = "Asset: Scripts"
+		elseif moduleCount > 0 and moduleCount >= toolCount and moduleCount >= scriptCount and moduleCount >= remoteCount then
+			tag = "Asset: Modules"
+		elseif remoteCount > 0 and remoteCount >= toolCount and remoteCount >= scriptCount and remoteCount >= moduleCount then
+			tag = "Asset: Remotes"
+		elseif partCount > 0 then
+			tag = "Asset: Parts"
+		end
+
+		-- Format name to be readable (hex encode control characters, count spaces)
+		local representation = ""
+		if string.match(name, "^%s+$") then
+			representation = "Spaces: " .. #name
+		else
+			local hex = {}
+			for i = 1, #name do
+				local byte = string.byte(name, i)
+				if byte < 32 or byte > 126 then
+					table.insert(hex, string.format("\\x%02X", byte))
+				else
+					table.insert(hex, string.char(byte))
+				end
+			end
+			representation = table.concat(hex)
+		end
+
+		return string.format("[%s] (%s)", tag, representation)
+	end
+
 	Explorer.Refresh = function()
 		local maxNodes = math.max(math.ceil((treeFrame.AbsoluteSize.Y) / 20), 0)	
 		local renameNodeVisible = false
@@ -677,7 +762,7 @@ local function main()
 				entry.Visible = true
 				entry.Position = UDim2.new(0,-scrollH.Index,0,entry.Position.Y.Offset)
 				entry.Size = UDim2.new(0,Explorer.ViewWidth,0,20)
-				entry.Indent.EntryName.Text = tostring(node.Obj)
+				entry.Indent.EntryName.Text = Explorer.GetCleanNodeName(node.Obj)
 				entry.Indent.Position = UDim2.new(0,depth,0,0)
 				entry.Indent.Size = UDim2.new(1,-depth,1,0)
 
@@ -767,13 +852,13 @@ local function main()
 	Explorer.NodeDepth = function(node)
 		local depth = 0
 
-		if node == nilNode then
+		if node == nilNode or node == capturedNode then
 			return 1
 		end
 
 		local curNode = node.Parent
 		while curNode do
-			if curNode == nilNode then depth = depth + 1 end
+			if curNode == nilNode or curNode == capturedNode then depth = depth + 1 end
 			curNode = curNode.Parent
 			depth = depth + 1
 		end
@@ -1349,6 +1434,34 @@ local function main()
 			local function push(text)
 				lines[#lines + 1] = text
 			end
+			local function compactSourceAnalysis(analysis)
+				if type(analysis) ~= "string" or analysis == "" then return nil end
+				local httpService = service and service.HttpService
+				if not httpService then
+					local ok, resolved = pcall(game.GetService, game, "HttpService")
+					if ok then httpService = resolved end
+				end
+				if not httpService then return analysis end
+				local ok, decoded = pcall(function()
+					return httpService:JSONDecode(analysis)
+				end)
+				if not ok or type(decoded) ~= "table" then return analysis end
+
+				local parts = {}
+				if decoded.lines then parts[#parts + 1] = tostring(decoded.lines) .. " lines" end
+				if decoded.functions then parts[#parts + 1] = tostring(decoded.functions) .. " functions" end
+				if decoded.requires then parts[#parts + 1] = tostring(decoded.requires) .. " requires" end
+				if decoded.remoteCalls then parts[#parts + 1] = tostring(decoded.remoteCalls) .. " remote calls" end
+				if decoded.riskySignals then parts[#parts + 1] = tostring(decoded.riskySignals) .. " risky signals" end
+				if type(decoded.topIdentifiers) == "table" and #decoded.topIdentifiers > 0 then
+					local ids = {}
+					for i = 1, math.min(#decoded.topIdentifiers, 5) do
+						ids[#ids + 1] = tostring(decoded.topIdentifiers[i])
+					end
+					parts[#parts + 1] = "top identifiers: " .. table.concat(ids, ", ")
+				end
+				return table.concat(parts, " | ")
+			end
 			local okPath, path = pcall(function()
 				return Explorer.GetInstancePath(obj)
 			end)
@@ -1392,7 +1505,7 @@ local function main()
 					if cacheOk and type(cachedSource) == "string" then
 						local helperOk, analysis = pcall(env.HelperServer.AnalyzeSource, cachedSource)
 						if helperOk and type(analysis) == "string" and #analysis > 0 then
-							push("  Cached source analysis: " .. analysis)
+							push("  Cached source analysis: " .. (compactSourceAnalysis(analysis) or analysis))
 						end
 					end
 				end
@@ -1418,6 +1531,35 @@ local function main()
 			end
 			if #sList > 6 then
 				lines[#lines + 1] = ("... and %d more selected object(s)."):format(#sList - 6)
+			end
+			local taskText = table.concat(lines, "\n")
+			if Apps.TaskRouter and Apps.TaskRouter.RouteTask then
+				local ok, decision, sourceKind = pcall(Apps.TaskRouter.RouteTask, taskText)
+				if ok and decision and decision.primary then
+					local primary = decision.primary
+					local secondary = decision.secondary or {}
+					lines[#lines + 1] = ""
+					lines[#lines + 1] = "Role recommendation:"
+					lines[#lines + 1] = ("- Primary: %s [%s] -> %s"):format(
+						tostring(primary.label or "Unknown"),
+						tostring(primary.language or "Unknown"),
+						tostring(primary.module or "Unknown")
+					)
+					lines[#lines + 1] = ("- Confidence: %s%% | Source: %s"):format(tostring(primary.confidence or 0), tostring(sourceKind or "local"))
+					lines[#lines + 1] = ("- Why: %s"):format(tostring(primary.summary or ""))
+					if secondary.label then
+						lines[#lines + 1] = ("- Fallback: %s [%s] -> %s"):format(
+							tostring(secondary.label or "Unknown"),
+							tostring(secondary.language or "Unknown"),
+							tostring(secondary.module or "Unknown")
+						)
+					end
+					if decision.workflow then
+						for i = 1, math.min(3, #decision.workflow) do
+							lines[#lines + 1] = "- " .. tostring(decision.workflow[i])
+						end
+					end
+				end
 			end
 			lines[#lines + 1] = ""
 			lines[#lines + 1] = "Helpful DEX++ tools already available:"
@@ -1764,42 +1906,51 @@ local function main()
 		local nilInsts = env.getnilinstances()
 		local game = game
 		local getDescs = game.GetDescendants
-		--local newNilMap = {}
-		--local newNilRoots = {}
-		--local nilRoots = Explorer.NilRoots
-		--local connect = game.DescendantAdded.Connect
-		--local disconnect
-		--if not nilRoots then nilRoots = {} Explorer.NilRoots = nilRoots end
+
+		local function isViableNilInstance(obj)
+			local class = obj.ClassName
+			if class == "LuaSourceContainer" or class == "Script" or class == "LocalScript" or class == "ModuleScript" then
+				return true
+			elseif class == "RemoteEvent" or class == "RemoteFunction" or class == "UnreliableRemoteEvent" or class == "BindableEvent" or class == "BindableFunction" then
+				return true
+			elseif class == "Tool" or class == "HopperBin" then
+				return true
+			end
+
+			local children = obj:GetChildren()
+			for i = 1, #children do
+				if isViableNilInstance(children[i]) then
+					return true
+				end
+			end
+			return false
+		end
 
 		for i = 1,#nilInsts do
 			local obj = nilInsts[i]
-			if obj ~= game then
+			if obj ~= game and isViableNilInstance(obj) then
 				nilMap[obj] = true
-				--newNilRoots[obj] = true
 
-				local descs = getDescs(obj)
-				for j = 1,#descs do
-					nilMap[descs[j]] = true
+				local ok, descs = pcall(getDescs, obj)
+				if ok and descs then
+					for j = 1,#descs do
+						nilMap[descs[j]] = true
+					end
 				end
 			end
 		end
 
-		-- Remove unmapped nil nodes
-		--[[for i = 1,#nilNode do
-			local node = nilNode[i]
-			if not newNilMap[node.Obj] then
-				nilMap[node.Obj] = nil
-				coroutine.wrap(removeObject)(node)
-			end
-		end]]
-
-		--nilMap = newNilMap
-
 		for i = 1,#nilInsts do
 			local obj = nilInsts[i]
-			local node = nodes[obj]
-			if not node then coroutine.wrap(addObject)(obj) end
+			if nilMap[obj] then
+				local node = nodes[obj]
+				if not node then coroutine.wrap(addObject)(obj) end
+			end
 		end
+
+		Explorer.Update()
+		Explorer.Refresh()
+	end
 
 		--[[
 		-- Remove old root connections
@@ -2325,6 +2476,7 @@ return search]==]
 				local start = tick()
 				searchFunc(nodes[game])
 				searchFunc(nilNode)
+				searchFunc(capturedNode)
 				--warn(tick()-start)
 			end
 		end
@@ -2368,6 +2520,19 @@ return search]==]
 			if not node then return end
 
 			local entry = listEntries[ind]
+
+			-- Redirect Captured Templates shortcut clicks to the real object!
+			if node.Obj and node.Obj.Parent == capturedNode.Obj and node.Obj:IsA("ObjectValue") then
+				local realObj = node.Obj.Value
+				if realObj and nodes[realObj] then
+					local realNode = nodes[realObj]
+					Explorer.MakeNodeVisible(realNode)
+					selection:Set(realNode)
+					Explorer.ViewNode(realNode)
+					Explorer.Refresh()
+					return
+				end
+			end
 
 			if button == 1 then
 				if combo == 2 then
@@ -2577,6 +2742,27 @@ return search]==]
 				end
 			end
 		end
+	local function registerSniffedTemplate(obj)
+		if not obj or typeof(obj) ~= "Instance" then return end
+
+		local className = obj.ClassName
+		if className == "Connection" or className == "Player" or obj == game or obj.Parent == game then return end
+		if ffa(obj, "CoreGui") or ffa(obj, "PluginGuiService") then return end
+		if obj.Parent == capturedNode.Obj or obj == capturedNode.Obj or obj == nilNode.Obj or obj.Parent == nilNode.Obj then return end
+
+		local shortcutName = obj.Name .. " [" .. className .. "]"
+		if capturedNode.Obj:FindFirstChild(shortcutName) then return end
+
+		local shortcut = Instance.new("ObjectValue")
+		shortcut.Name = shortcutName
+		shortcut.Value = obj
+		shortcut.Parent = capturedNode.Obj
+
+		if nodes[capturedNode.Obj] then
+			coroutine.wrap(addObject)(shortcut)
+			Explorer.Update()
+			Explorer.Refresh()
+		end
 	end
 
 	Explorer.Init = function()
@@ -2615,6 +2801,9 @@ return search]==]
 
 		nilNode.Obj.Name = "Nil Instances"
 		nilNode.Locked = true
+
+		capturedNode.Obj.Name = "Captured Templates"
+		capturedNode.Locked = true
 
 		local explorerItems = create({
 			{1,"Folder",{Name="ExplorerItems",}},
@@ -2706,6 +2895,9 @@ return search]==]
 			nodes[nilNode.Obj] = nilNode
 		end
 
+		-- Captured Templates
+		nodes[capturedNode.Obj] = capturedNode
+
 		Explorer.SetupConnections()
 
 		local insts = getDescendants(game)
@@ -2734,6 +2926,40 @@ return search]==]
 				nodes[obj] = newNode
 				par[#par+1] = newNode
 			end
+		end
+
+		-- Auto Scan Nil Instances on startup
+		task.spawn(function()
+			pcall(Explorer.RefreshNilInstances)
+		end)
+
+		-- Hook __namecall for Metatable Sniffing
+		if env.hookmetamethod then
+			task.spawn(function()
+				local oldNamecall
+				oldNamecall = env.hookmetamethod(game, "__namecall", function(self, ...)
+					local method = getnamecallmethod()
+					if not env.checkcaller() and typeof(self) == "Instance" then
+						if method == "Clone" then
+							task.spawn(pcall, registerSniffedTemplate, self)
+						elseif method == "FindFirstChild" or method == "WaitForChild" then
+							local args = {...}
+							local childName = args[1]
+							if typeof(childName) == "string" then
+								task.spawn(function()
+									pcall(function()
+										local child = game.FindFirstChild(self, childName)
+										if child then
+											registerSniffedTemplate(child)
+										end
+									end)
+								end)
+							end
+						end
+					end
+					return oldNamecall(self, ...)
+				end)
+			end)
 		end
 	end
 

@@ -32,6 +32,7 @@ struct IndexedScript {
     std::string lower_source;
     std::string lower_path;
     std::string analysis;
+    std::vector<std::string> top_identifiers;
     std::time_t updated_at;
 };
 
@@ -215,6 +216,22 @@ std::vector<std::string> top_identifiers(const std::string& source, int limit) {
     return out;
 }
 
+std::string identifier_name(const std::string& identifier_count) {
+    size_t split = identifier_count.find(':');
+    if (split == std::string::npos) return identifier_count;
+    return identifier_count.substr(0, split);
+}
+
+double confidence_for_match(const std::string& match_type, int score) {
+    double confidence = 0.60;
+    if (match_type == "name") confidence = 0.98;
+    else if (match_type == "identifier") confidence = 0.88;
+    else if (match_type == "path") confidence = 0.82;
+    else if (match_type == "source") confidence = 0.72;
+    confidence += std::min(0.08, static_cast<double>(score) / 250.0);
+    return std::min(0.99, confidence);
+}
+
 std::string analyze_source(const std::string& source) {
     int lines = source.empty() ? 0 : 1;
     for (char c : source) if (c == '\n') ++lines;
@@ -272,6 +289,166 @@ std::string analyze_source(const std::string& source) {
     return json.str();
 }
 
+struct RoleProfile {
+    std::string id;
+    std::string label;
+    std::string language;
+    std::string module;
+    std::string summary;
+    std::vector<std::pair<std::string, int>> keywords;
+};
+
+struct ScoredRole {
+    const RoleProfile* profile;
+    int score;
+    std::vector<std::string> matched;
+};
+
+ScoredRole score_role(const std::string& text, const RoleProfile& profile) {
+    ScoredRole result{&profile, 0, {}};
+    for (const auto& term : profile.keywords) {
+        int hits = count_token(text, term.first);
+        if (hits <= 0) continue;
+        result.score += hits * term.second;
+        if (result.matched.size() < 6) {
+            result.matched.push_back(term.first);
+        }
+    }
+    return result;
+}
+
+std::string assign_role(const std::string& task) {
+    std::string text = lower_copy(task);
+    std::vector<RoleProfile> profiles = {
+        {
+            "cxx_helper_core",
+            "C++ Helper Core",
+            "C++",
+            "HelperServer",
+            "Fast indexing, source analysis, cache maintenance, search, and structured export.",
+            {
+                {"index", 7}, {"search", 7}, {"cache", 7}, {"analysis", 6}, {"analyze", 6},
+                {"parse", 5}, {"json", 6}, {"deobfuscate", 8}, {"source", 4}, {"snippet", 4},
+                {"timeline", 4}, {"graph", 4}, {"dependency", 4}, {"report", 4}, {"export", 4},
+                {"log", 3}, {"token", 4}, {"score", 3}, {"pack", 4}
+            }
+        },
+        {
+            "luau_ui",
+            "Luau UI / Explorer",
+            "Luau",
+            "Explorer",
+            "Immediate UI work, tree rendering, selection handling, buttons, tabs, and menus.",
+            {
+                {"ui", 6}, {"window", 6}, {"button", 7}, {"tab", 7}, {"menu", 7},
+                {"tree", 8}, {"selection", 8}, {"explorer", 7}, {"panel", 5}, {"label", 4},
+                {"textbox", 6}, {"render", 6}, {"layout", 6}, {"context", 5}, {"click", 5},
+                {"select", 6}, {"copy", 4}, {"view", 4}
+            }
+        },
+        {
+            "luau_runtime",
+            "Luau Runtime Monitor",
+            "Luau",
+            "RuntimeInspector",
+            "Live object capture, remotes, property tracking, timeline, and lightweight client state.",
+            {
+                {"runtime", 8}, {"live", 6}, {"remote", 8}, {"remotes", 8}, {"property", 7},
+                {"tracker", 6}, {"timeline", 8}, {"snapshot", 6}, {"capture", 6}, {"monitor", 7},
+                {"buffer", 5}, {"record", 5}, {"event", 5}, {"inspector", 7}, {"state", 4}
+            }
+        },
+        {
+            "ai_context",
+            "AI Context Packager",
+            "Mixed",
+            "CopyToAI",
+            "Prompt building, summary packing, object context, and beginner-friendly explanation.",
+            {
+                {"ai", 8}, {"prompt", 8}, {"context", 8}, {"copy", 6}, {"summar", 7},
+                {"beginner", 5}, {"explain", 5}, {"pack", 5}, {"export", 5}, {"guide", 4}
+            }
+        }
+    };
+
+    std::vector<ScoredRole> scored;
+    scored.reserve(profiles.size());
+    for (const auto& profile : profiles) {
+        scored.push_back(score_role(text, profile));
+    }
+
+    std::sort(scored.begin(), scored.end(), [](const ScoredRole& a, const ScoredRole& b) {
+        if (a.score == b.score) return a.profile->id < b.profile->id;
+        return a.score > b.score;
+    });
+
+    const ScoredRole* primary = scored.empty() ? nullptr : &scored[0];
+    const ScoredRole* secondary = scored.size() > 1 ? &scored[1] : nullptr;
+
+    auto confidence_for = [](int score) {
+        if (score <= 0) return 35;
+        return std::min(98, 40 + score * 4);
+    };
+
+    std::stringstream json;
+    json << "{";
+    json << "\"ok\":true,";
+    json << "\"taskBytes\":" << task.size() << ",";
+    json << "\"primary\":{";
+    if (primary) {
+        json << "\"role\":\"" << escape_json(primary->profile->id) << "\",";
+        json << "\"label\":\"" << escape_json(primary->profile->label) << "\",";
+        json << "\"language\":\"" << escape_json(primary->profile->language) << "\",";
+        json << "\"module\":\"" << escape_json(primary->profile->module) << "\",";
+        json << "\"confidence\":" << confidence_for(primary->score) << ",";
+        json << "\"score\":" << primary->score << ",";
+        json << "\"summary\":\"" << escape_json(primary->profile->summary) << "\",";
+        json << "\"signals\":[";
+        for (size_t i = 0; i < primary->matched.size(); ++i) {
+            if (i > 0) json << ",";
+            json << "\"" << escape_json(primary->matched[i]) << "\"";
+        }
+        json << "]";
+    } else {
+        json << "\"role\":\"unknown\",\"label\":\"Unknown\",\"language\":\"Unknown\",\"module\":\"Unknown\",\"confidence\":35,\"score\":0,\"summary\":\"No match\",\"signals\":[]";
+    }
+    json << "},";
+    json << "\"secondary\":{";
+    if (secondary) {
+        json << "\"role\":\"" << escape_json(secondary->profile->id) << "\",";
+        json << "\"label\":\"" << escape_json(secondary->profile->label) << "\",";
+        json << "\"language\":\"" << escape_json(secondary->profile->language) << "\",";
+        json << "\"module\":\"" << escape_json(secondary->profile->module) << "\",";
+        json << "\"confidence\":" << confidence_for(secondary->score) << ",";
+        json << "\"score\":" << secondary->score << ",";
+        json << "\"summary\":\"" << escape_json(secondary->profile->summary) << "\",";
+        json << "\"signals\":[";
+        for (size_t i = 0; i < secondary->matched.size(); ++i) {
+            if (i > 0) json << ",";
+            json << "\"" << escape_json(secondary->matched[i]) << "\"";
+        }
+        json << "]";
+    } else {
+        json << "\"role\":\"unknown\",\"label\":\"Unknown\",\"language\":\"Unknown\",\"module\":\"Unknown\",\"confidence\":35,\"score\":0,\"summary\":\"No fallback\",\"signals\":[]";
+    }
+    json << "},";
+    json << "\"workflow\":[";
+    if (primary) {
+        std::vector<std::string> workflow = {
+            "Send heavy, repeated, or cached work to " + primary->profile->module + ".",
+            "Keep UI, selection, and click handling in Luau.",
+            "Use cache-first flows; only fall back when the helper is offline."
+        };
+        for (size_t i = 0; i < workflow.size(); ++i) {
+            if (i > 0) json << ",";
+            json << "\"" << escape_json(workflow[i]) << "\"";
+        }
+    }
+    json << "]";
+    json << "}";
+    return json.str();
+}
+
 std::string index_source_payload(const std::string& body) {
     auto parts = split_header_payload(body, 4);
     if (parts.size() != 5 || parts[0].empty()) {
@@ -287,7 +464,9 @@ std::string index_source_payload(const std::string& body) {
     entry.lower_source = lower_copy(entry.source);
     entry.lower_path = lower_copy(entry.path);
     entry.analysis = analyze_source(entry.source);
+    entry.top_identifiers = top_identifiers(entry.source, 12);
     entry.updated_at = std::time(nullptr);
+    std::time_t updated_at = entry.updated_at;
     g_script_index[entry.key] = std::move(entry);
 
     size_t bytes = 0;
@@ -295,17 +474,35 @@ std::string index_source_payload(const std::string& body) {
 
     std::stringstream json;
     json << "{\"ok\":true,\"total\":" << g_script_index.size()
-         << ",\"bytes\":" << bytes << "}";
+         << ",\"bytes\":" << bytes
+         << ",\"updatedAt\":" << static_cast<long long>(updated_at)
+         << "}";
     return json.str();
 }
 
 std::string index_status() {
     size_t bytes = 0;
+    std::time_t newest = 0;
+    std::time_t oldest = 0;
+    bool seen = false;
     for (const auto& item : g_script_index) bytes += item.second.source.size();
+    for (const auto& item : g_script_index) {
+        std::time_t updated = item.second.updated_at;
+        if (!seen) {
+            newest = oldest = updated;
+            seen = true;
+        } else {
+            newest = std::max(newest, updated);
+            oldest = std::min(oldest, updated);
+        }
+    }
 
     std::stringstream json;
     json << "{\"ok\":true,\"scripts\":" << g_script_index.size()
-         << ",\"bytes\":" << bytes << "}";
+         << ",\"bytes\":" << bytes
+         << ",\"oldestUpdatedAt\":" << static_cast<long long>(seen ? oldest : 0)
+         << ",\"newestUpdatedAt\":" << static_cast<long long>(seen ? newest : 0)
+         << "}";
     return json.str();
 }
 
@@ -331,6 +528,9 @@ std::string search_index(const std::string& body) {
         const IndexedScript* entry;
         int score;
         size_t pos;
+        std::string match_type;
+        std::string matched_token;
+        double confidence;
     };
     std::vector<Hit> hits;
     hits.reserve(std::min<size_t>(g_script_index.size(), static_cast<size_t>(limit)));
@@ -339,13 +539,46 @@ std::string search_index(const std::string& body) {
         const IndexedScript& entry = item.second;
         size_t path_pos = entry.lower_path.find(query);
         size_t source_pos = entry.lower_source.find(query);
-        if (path_pos == std::string::npos && source_pos == std::string::npos) continue;
+        std::string lower_name = lower_copy(entry.name);
+        size_t name_pos = lower_name.find(query);
+        std::string matched_identifier;
+        size_t identifier_pos = std::string::npos;
+        for (const auto& identifier : entry.top_identifiers) {
+            std::string lower_identifier = lower_copy(identifier_name(identifier));
+            if (lower_identifier.find(query) != std::string::npos || query.find(lower_identifier) != std::string::npos) {
+                identifier_pos = entry.lower_source.find(lower_identifier);
+                matched_identifier = identifier;
+                break;
+            }
+        }
+        if (path_pos == std::string::npos && source_pos == std::string::npos && name_pos == std::string::npos && identifier_pos == std::string::npos) continue;
 
         int score = 10;
         if (path_pos != std::string::npos) score += 30;
         if (source_pos != std::string::npos) score += 15;
-        if (lower_copy(entry.name) == query) score += 40;
-        hits.push_back({&entry, score, source_pos == std::string::npos ? 0 : source_pos});
+        if (name_pos == 0 && lower_name == query) score += 40;
+        else if (name_pos != std::string::npos) score += 20;
+        if (identifier_pos != std::string::npos) score += 25;
+
+        std::string match_type = "source";
+        size_t pos = source_pos != std::string::npos ? source_pos : 0;
+        std::string matched_token = query;
+        if (path_pos != std::string::npos) {
+            match_type = "path";
+            pos = source_pos != std::string::npos ? source_pos : 0;
+        }
+        if (identifier_pos != std::string::npos) {
+            match_type = "identifier";
+            matched_token = matched_identifier;
+            if (source_pos != std::string::npos) pos = source_pos;
+        }
+        if (name_pos != std::string::npos) {
+            match_type = "name";
+            matched_token = entry.name;
+            if (source_pos != std::string::npos) pos = source_pos;
+        }
+
+        hits.push_back({&entry, score, pos, match_type, matched_token, confidence_for_match(match_type, score)});
     }
 
     std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
@@ -364,6 +597,10 @@ std::string search_index(const std::string& body) {
         json << "\"name\":\"" << escape_json(entry.name) << "\",";
         json << "\"className\":\"" << escape_json(entry.class_name) << "\",";
         json << "\"score\":" << hits[i].score << ",";
+        json << "\"matchType\":\"" << escape_json(hits[i].match_type) << "\",";
+        json << "\"matchedToken\":\"" << escape_json(hits[i].matched_token) << "\",";
+        json << "\"confidence\":" << hits[i].confidence << ",";
+        json << "\"updatedAt\":" << static_cast<long long>(entry.updated_at) << ",";
         json << "\"snippet\":\"" << escape_json(make_snippet(entry.source, hits[i].pos)) << "\",";
         json << "\"analysis\":" << entry.analysis << "}";
     }
@@ -538,6 +775,8 @@ int main() {
             } else if (path == "/index-clear" && method == "POST") {
                 g_script_index.clear();
                 send_response(ClientSocket, 200, "OK", "{\"ok\":true,\"total\":0}");
+            } else if (path == "/assign-role" && method == "POST") {
+                send_response(ClientSocket, 200, "OK", assign_role(body));
             } else if (path == "/decompile" && method == "POST") {
                 send_response(
                     ClientSocket,

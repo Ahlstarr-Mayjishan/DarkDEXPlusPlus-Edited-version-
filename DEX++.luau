@@ -86,7 +86,7 @@ end
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, TaskRouter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -244,7 +244,7 @@ end
 Main = (function()
 	local Main = {}
 
-	Main.ModuleList = {"Theme","SmartDecompiler","Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","CodeSearch","ScriptRelations","RemoteUsageMap","ObjectLinks","ImageViewer","ClientIndex","ActivityMap","DependencyGraph","SmartSearch","RuntimeInspector","ClientIntelligence","SecurityAuditor","RemoteFuzzer","PropertyTracker","InstanceSerializer","ThreadManager"}
+	Main.ModuleList = {"Theme","SmartDecompiler","Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","CodeSearch","ScriptRelations","RemoteUsageMap","ObjectLinks","ImageViewer","ClientIndex","ActivityMap","DependencyGraph","SmartSearch","RuntimeInspector","ClientIntelligence","TaskRouter","SecurityAuditor","RemoteFuzzer","PropertyTracker","InstanceSerializer","ThreadManager"}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
 	Main.MissingEnv = {}
@@ -528,6 +528,7 @@ Main = (function()
 		SmartSearch = Apps.SmartSearch
 		RuntimeInspector = Apps.RuntimeInspector
 		ClientIntelligence = Apps.ClientIntelligence
+		TaskRouter = Apps.TaskRouter
 		Theme = Apps.Theme
 		SmartDecompiler = Apps.SmartDecompiler
 		SecurityAuditor = Apps.SecurityAuditor
@@ -560,6 +561,7 @@ Main = (function()
 			SmartSearch = SmartSearch,
 			RuntimeInspector = RuntimeInspector,
 			ClientIntelligence = ClientIntelligence,
+			TaskRouter = TaskRouter,
 			SecurityAuditor = SecurityAuditor,
 			RemoteFuzzer = RemoteFuzzer,
 			PropertyTracker = PropertyTracker,
@@ -886,6 +888,14 @@ Main = (function()
 			function helper.ClearSourceIndex()
 				local result = helper.Request("/index-clear", "POST", "", "text/plain")
 				return result and result.StatusCode == 200
+			end
+
+			function helper.AssignRole(task)
+				local result = helper.Request("/assign-role", "POST", tostring(task or ""), "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
 			end
 
 			function helper.Log(line)
@@ -2337,6 +2347,8 @@ Main = (function()
 
 		Main.CreateApp({Name = "Client Intelligence", IconMap = Main.LargeIcons, Icon = "Output", Window = ClientIntelligence.Window})
 
+		Main.CreateApp({Name = "Task Router", IconMap = Main.LargeIcons, Icon = "ScriptEdit", Window = TaskRouter.Window})
+
 		Main.CreateApp({Name = "Security Auditor", IconMap = Main.LargeIcons, Icon = "Watcher", Window = SecurityAuditor.Window})
 		Main.CreateApp({Name = "Property Tracker", IconMap = Main.LargeIcons, Icon = "Watcher", Window = PropertyTracker.Window})
 		Main.CreateApp({Name = "Thread Manager", IconMap = Main.LargeIcons, Icon = "ScriptEdit", Window = ThreadManager.Window})
@@ -2494,6 +2506,7 @@ Main = (function()
 		SmartSearch.Init()
 		RuntimeInspector.Init()
 		ClientIntelligence.Init()
+		TaskRouter.Init()
 		SecurityAuditor.Init()
 		--SecretServicePanel.Init()
 		

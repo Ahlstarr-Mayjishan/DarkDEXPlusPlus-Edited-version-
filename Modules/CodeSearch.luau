@@ -160,12 +160,58 @@ local function main()
 		return button
 	end
 
-	local function addResult(entryKey, entry, query, source, snippetOverride)
+	local function formatAge(epoch)
+		local stamp = tonumber(epoch or 0)
+		if not stamp or stamp <= 0 then return nil end
+		local age = math.max(0, os.time() - stamp)
+		if age < 60 then return ("%ds ago"):format(age) end
+		if age < 3600 then return ("%dm ago"):format(math.floor(age / 60)) end
+		if age < 86400 then return ("%dh ago"):format(math.floor(age / 3600)) end
+		return ("%dd ago"):format(math.floor(age / 86400))
+	end
+
+	local function formatHelperMeta(metadata)
+		if type(metadata) ~= "table" then return "" end
+		local parts = {}
+		local score = tonumber(metadata.Score or metadata.score or 0)
+		if score > 0 then parts[#parts + 1] = ("score %d"):format(score) end
+		local matchType = tostring(metadata.MatchType or metadata.matchType or "")
+		if matchType ~= "" then parts[#parts + 1] = matchType end
+		local confidence = tonumber(metadata.Confidence or metadata.confidence or 0)
+		if confidence > 0 then
+			parts[#parts + 1] = ("%d%%"):format(math.floor(confidence * 100 + 0.5))
+		end
+		local updated = formatAge(metadata.UpdatedAt or metadata.updatedAt)
+		if updated then parts[#parts + 1] = "updated " .. updated end
+
+		local analysis = metadata.Analysis or metadata.analysis
+		if type(analysis) == "table" then
+			local stats = {}
+			if analysis.lines then stats[#stats + 1] = tostring(analysis.lines) .. " lines" end
+			if analysis.functions then stats[#stats + 1] = tostring(analysis.functions) .. " fn" end
+			if analysis.remoteCalls then stats[#stats + 1] = tostring(analysis.remoteCalls) .. " remotes" end
+			if analysis.riskySignals then stats[#stats + 1] = tostring(analysis.riskySignals) .. " risky" end
+			if #stats > 0 then parts[#parts + 1] = table.concat(stats, " | ") end
+			if type(analysis.topIdentifiers) == "table" and #analysis.topIdentifiers > 0 then
+				local preview = {}
+				for i = 1, math.min(#analysis.topIdentifiers, 3) do
+					preview[#preview + 1] = tostring(analysis.topIdentifiers[i])
+				end
+				parts[#parts + 1] = "ids: " .. table.concat(preview, ", ")
+			end
+		end
+
+		local matched = tostring(metadata.MatchedToken or metadata.matchedToken or "")
+		if matched ~= "" then parts[#parts + 1] = 'token "' .. matched .. '"' end
+		return table.concat(parts, " | ")
+	end
+
+	local function addResult(entryKey, entry, query, source, snippetOverride, metadata)
 		local row = Instance.new("TextButton")
 		row.AutoButtonColor = false
 		row.BackgroundColor3 = Settings.Theme.Main1
 		row.BorderColor3 = Settings.Theme.Outline1
-		row.Size = UDim2.new(1,-8,0,44)
+		row.Size = UDim2.new(1,-8,0,52)
 		row.Text = ""
 		row.Parent = resultsFrame
 
@@ -187,6 +233,11 @@ local function main()
 			local startIndex = lowerSource:find(query, 1, true) or 1
 			local snippetStart = math.max(1, startIndex - 45)
 			snippet = source:sub(snippetStart, math.min(#source, startIndex + 95)):gsub("\r", " "):gsub("\n", " ")
+		end
+
+		local metaText = formatHelperMeta(metadata)
+		if metaText ~= "" then
+			snippet = snippet ~= "" and (snippet .. " | " .. metaText) or metaText
 		end
 
 		local detail = Instance.new("TextLabel")
@@ -236,7 +287,14 @@ local function main()
 					Path = item.path,
 					Name = item.name,
 					ClassName = item.className,
-				}, query, "", tostring(item.snippet or "helper source hit"))
+				}, query, "", tostring(item.snippet or "helper source hit"), {
+					Score = item.score,
+					MatchType = item.matchType,
+					MatchedToken = item.matchedToken,
+					Confidence = item.confidence,
+					UpdatedAt = item.updatedAt,
+					Analysis = item.analysis,
+				})
 			end
 		end
 		setStatus(("Helper search: %d result(s) from %d indexed script(s)."):format(found, tonumber(decoded.indexed or 0)))

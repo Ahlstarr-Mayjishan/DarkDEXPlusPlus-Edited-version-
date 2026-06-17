@@ -65,12 +65,25 @@ When `DEX_Helper.exe` is running, `Code Search > Index Scripts` now delegates ex
 - decompiled/cached source is sent to `/index-source`;
 - the helper keeps a fast in-memory index for the current helper session;
 - `Code Search` and shared `ClientIndex.SearchCached` prefer `/search-source`;
+- helper search results include match type, score, confidence, freshness, source snippets, and compact source analysis;
+- `Client Intelligence > Index` shows helper index health, local cache coverage, and live client-surface coverage;
 - if the helper is offline or the helper index is empty, DarkDEX++ falls back to the old Luau cache scan.
 
 This is intentionally session-local RAM state. It avoids background scanning and avoids keeping another database process alive. Restarting the helper clears the helper-side index; running `Index Scripts` rebuilds it.
 
+## Task Router
+
+`Task Router` assigns work to the best layer for the job:
+
+- C++ helper for indexing, search, analysis, cache, and export;
+- Luau UI for selection, trees, buttons, and immediate interactions;
+- runtime monitor roles for live client data and timelines;
+- AI context packaging when you want a clean prompt or handoff.
+
 ## Copy to AI + helper analysis
 
 In the Explorer, the `Copy to AI` option will automatically copy the object summary to your clipboard. If the object is a script that is already in the decompile cache and the local helper is running, the prompt will include the `Cached source analysis` so that the AI can understand it faster without reading the entire source code.
+
+The copied analysis is compacted into line/function/require/remote/risk counts plus prominent identifiers, instead of pasting raw helper JSON into the prompt.
 
 To make the C++ helper truly speed up decompilation, it requires a real decompiler backend that accepts bytecode and returns Luau source code. The helper does not currently feature this component.

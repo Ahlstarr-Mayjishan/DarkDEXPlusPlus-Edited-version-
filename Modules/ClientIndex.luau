@@ -131,6 +131,13 @@ local function main()
 								ClassName = item.className,
 							},
 							Snippet = tostring(item.snippet or "helper source hit"),
+							Score = tonumber(item.score or 0),
+							MatchType = tostring(item.matchType or "helper"),
+							MatchedToken = tostring(item.matchedToken or ""),
+							Confidence = tonumber(item.confidence or 0),
+							UpdatedAt = tonumber(item.updatedAt or 0),
+							Analysis = item.analysis,
+							Source = "helper-index",
 						}
 						if limit and #rows >= limit then return rows end
 					end
@@ -188,6 +195,17 @@ local function main()
 			if count % 20 == 0 then task.wait() end
 		end
 		return rows
+	end
+	function ClientIndex.GetIndexStatus()
+		if not env.HelperServer or not env.HelperServer.IndexStatus then return nil end
+		local active = true
+		if env.HelperServer.IsActive then active = env.HelperServer.IsActive(false) end
+		if not active then return nil end
+		local decoded = decodeJson(env.HelperServer.IndexStatus())
+		if decoded and decoded.ok == true then
+			return decoded
+		end
+		return nil
 	end
 	function ClientIndex.Path(obj) return getPath(obj) end
 	function ClientIndex.Init()

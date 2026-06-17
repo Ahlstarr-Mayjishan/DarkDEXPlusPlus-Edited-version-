@@ -1310,6 +1310,7 @@ end,
     	local getTextSize = service.TextService.GetTextSize
     	local updateDebounce,refreshDebounce = false,false
     	local nilNode = {Obj = Instance.new("Folder")}
+    	local capturedNode = {Obj = Instance.new("Folder")}
     	local idCounter = 0
     	local scrollV,scrollH,clipboard
     	local renameBox,renamingNode,searchFunc
@@ -1669,7 +1670,7 @@ end,
     				if useNameWidth then
     					local nameWidth = n.NameWidth
     					if not nameWidth then
-    						local objName = tostring(n.Obj)
+    						local objName = Explorer.GetCleanNodeName(n.Obj)
     						nameWidth = nameCache[objName]
     						if not nameWidth then
     							nameWidth = getTextSize(textServ,objName,14,font,size).X
@@ -1700,6 +1701,15 @@ end,
     				if expanded[nilNode] then
     					recur(nilNode,2)
     				end
+    			end
+    		end
+    
+    		-- Captured Templates
+    		if not (isSearching and not searchResults[capturedNode]) then
+    			tree[count] = capturedNode
+    			count = count + 1
+    			if expanded[capturedNode] then
+    				recur(capturedNode,2)
     			end
     		end
     
@@ -1923,6 +1933,81 @@ end,
     		return newEntry
     	end
     
+    	Explorer.GetCleanNodeName = function(obj)
+    		if not obj then return "" end
+    		if obj == nilNode.Obj then
+    			return "Nil Instances"
+    		elseif obj == capturedNode.Obj then
+    			return "Captured Templates"
+    		end
+    
+    		local name = obj.Name
+    
+    		-- Check if name is blank, contains only spaces, tabs, newlines or control chars
+    		local isObfuscated = false
+    		if #name == 0 then
+    			isObfuscated = true
+    		elseif string.match(name, "^%s*$") then
+    			isObfuscated = true
+    		elseif string.match(name, "[%c%z]") then -- control characters or null bytes
+    			isObfuscated = true
+    		end
+    
+    		if not isObfuscated then
+    			return name
+    		end
+    
+    		-- Count child types for classification
+    		local children = obj:GetChildren()
+    		local toolCount, scriptCount, remoteCount, partCount, moduleCount = 0, 0, 0, 0, 0
+    		for i = 1, #children do
+    			local child = children[i]
+    			if child:IsA("Tool") or child:IsA("HopperBin") then
+    				toolCount += 1
+    			elseif child:IsA("ModuleScript") then
+    				moduleCount += 1
+    			elseif child:IsA("LuaSourceContainer") then
+    				scriptCount += 1
+    			elseif child:IsA("RemoteEvent") or child:IsA("RemoteFunction") or child:IsA("UnreliableRemoteEvent") then
+    				remoteCount += 1
+    			elseif child:IsA("BasePart") then
+    				partCount += 1
+    			end
+    		end
+    
+    		local tag = "Obfuscated Folder"
+    		if toolCount > 0 and toolCount >= scriptCount and toolCount >= remoteCount and toolCount >= moduleCount then
+    			tag = "Asset: Tools"
+    		elseif scriptCount > 0 and scriptCount >= toolCount and scriptCount >= remoteCount and scriptCount >= moduleCount then
+    			tag = "Asset: Scripts"
+    		elseif moduleCount > 0 and moduleCount >= toolCount and moduleCount >= scriptCount and moduleCount >= remoteCount then
+    			tag = "Asset: Modules"
+    		elseif remoteCount > 0 and remoteCount >= toolCount and remoteCount >= scriptCount and remoteCount >= moduleCount then
+    			tag = "Asset: Remotes"
+    		elseif partCount > 0 then
+    			tag = "Asset: Parts"
+    		end
+    
+    		-- Format name to be readable (hex encode control characters, count spaces)
+    		local representation = ""
+    		if string.match(name, "^%s+$") then
+    			representation = "Spaces: " .. #name
+    		else
+    			local hex = {}
+    			for i = 1, #name do
+    				local byte = string.byte(name, i)
+    				if byte < 32 or byte > 126 then
+    					table.insert(hex, string.format("\\x%02X", byte))
+    				else
+    					table.insert(hex, string.char(byte))
+    				end
+    			end
+    			representation = table.concat(hex)
+    		end
+    
+    		return string.format("[%s] (%s)", tag, representation)
+    	end
+    
     	Explorer.Refresh = function()
     		local maxNodes = math.max(math.ceil((treeFrame.AbsoluteSize.Y) / 20), 0)	
     		local renameNodeVisible = false
@@ -1940,7 +2025,7 @@ end,
     				entry.Visible = true
     				entry.Position = UDim2.new(0,-scrollH.Index,0,entry.Position.Y.Offset)
     				entry.Size = UDim2.new(0,Explorer.ViewWidth,0,20)
-    				entry.Indent.EntryName.Text = tostring(node.Obj)
+    				entry.Indent.EntryName.Text = Explorer.GetCleanNodeName(node.Obj)
     				entry.Indent.Position = UDim2.new(0,depth,0,0)
     				entry.Indent.Size = UDim2.new(1,-depth,1,0)
     
@@ -2030,13 +2115,13 @@ end,
     	Explorer.NodeDepth = function(node)
     		local depth = 0
     
-    		if node == nilNode then
+    		if node == nilNode or node == capturedNode then
     			return 1
     		end
     
     		local curNode = node.Parent
     		while curNode do
-    			if curNode == nilNode then depth = depth + 1 end
+    			if curNode == nilNode or curNode == capturedNode then depth = depth + 1 end
     			curNode = curNode.Parent
     			depth = depth + 1
     		end
@@ -2612,6 +2697,34 @@ end,
     			local function push(text)
     				lines[#lines + 1] = text
     			end
+    			local function compactSourceAnalysis(analysis)
+    				if type(analysis) ~= "string" or analysis == "" then return nil end
+    				local httpService = service and service.HttpService
+    				if not httpService then
+    					local ok, resolved = pcall(game.GetService, game, "HttpService")
+    					if ok then httpService = resolved end
+    				end
+    				if not httpService then return analysis end
+    				local ok, decoded = pcall(function()
+    					return httpService:JSONDecode(analysis)
+    				end)
+    				if not ok or type(decoded) ~= "table" then return analysis end
+    
+    				local parts = {}
+    				if decoded.lines then parts[#parts + 1] = tostring(decoded.lines) .. " lines" end
+    				if decoded.functions then parts[#parts + 1] = tostring(decoded.functions) .. " functions" end
+    				if decoded.requires then parts[#parts + 1] = tostring(decoded.requires) .. " requires" end
+    				if decoded.remoteCalls then parts[#parts + 1] = tostring(decoded.remoteCalls) .. " remote calls" end
+    				if decoded.riskySignals then parts[#parts + 1] = tostring(decoded.riskySignals) .. " risky signals" end
+    				if type(decoded.topIdentifiers) == "table" and #decoded.topIdentifiers > 0 then
+    					local ids = {}
+    					for i = 1, math.min(#decoded.topIdentifiers, 5) do
+    						ids[#ids + 1] = tostring(decoded.topIdentifiers[i])
+    					end
+    					parts[#parts + 1] = "top identifiers: " .. table.concat(ids, ", ")
+    				end
+    				return table.concat(parts, " | ")
+    			end
     			local okPath, path = pcall(function()
     				return Explorer.GetInstancePath(obj)
     			end)
@@ -2655,7 +2768,7 @@ end,
     					if cacheOk and type(cachedSource) == "string" then
     						local helperOk, analysis = pcall(env.HelperServer.AnalyzeSource, cachedSource)
     						if helperOk and type(analysis) == "string" and #analysis > 0 then
-    							push("  Cached source analysis: " .. analysis)
+    							push("  Cached source analysis: " .. (compactSourceAnalysis(analysis) or analysis))
     						end
     					end
     				end
@@ -2681,6 +2794,35 @@ end,
     			end
     			if #sList > 6 then
     				lines[#lines + 1] = ("... and %d more selected object(s)."):format(#sList - 6)
+    			end
+    			local taskText = table.concat(lines, "\n")
+    			if Apps.TaskRouter and Apps.TaskRouter.RouteTask then
+    				local ok, decision, sourceKind = pcall(Apps.TaskRouter.RouteTask, taskText)
+    				if ok and decision and decision.primary then
+    					local primary = decision.primary
+    					local secondary = decision.secondary or {}
+    					lines[#lines + 1] = ""
+    					lines[#lines + 1] = "Role recommendation:"
+    					lines[#lines + 1] = ("- Primary: %s [%s] -> %s"):format(
+    						tostring(primary.label or "Unknown"),
+    						tostring(primary.language or "Unknown"),
+    						tostring(primary.module or "Unknown")
+    					)
+    					lines[#lines + 1] = ("- Confidence: %s%% | Source: %s"):format(tostring(primary.confidence or 0), tostring(sourceKind or "local"))
+    					lines[#lines + 1] = ("- Why: %s"):format(tostring(primary.summary or ""))
+    					if secondary.label then
+    						lines[#lines + 1] = ("- Fallback: %s [%s] -> %s"):format(
+    							tostring(secondary.label or "Unknown"),
+    							tostring(secondary.language or "Unknown"),
+    							tostring(secondary.module or "Unknown")
+    						)
+    					end
+    					if decision.workflow then
+    						for i = 1, math.min(3, #decision.workflow) do
+    							lines[#lines + 1] = "- " .. tostring(decision.workflow[i])
+    						end
+    					end
+    				end
     			end
     			lines[#lines + 1] = ""
     			lines[#lines + 1] = "Helpful DEX++ tools already available:"
@@ -3027,42 +3169,51 @@ end,
     		local nilInsts = env.getnilinstances()
     		local game = game
     		local getDescs = game.GetDescendants
-    		--local newNilMap = {}
-    		--local newNilRoots = {}
-    		--local nilRoots = Explorer.NilRoots
-    		--local connect = game.DescendantAdded.Connect
-    		--local disconnect
-    		--if not nilRoots then nilRoots = {} Explorer.NilRoots = nilRoots end
+    
+    		local function isViableNilInstance(obj)
+    			local class = obj.ClassName
+    			if class == "LuaSourceContainer" or class == "Script" or class == "LocalScript" or class == "ModuleScript" then
+    				return true
+    			elseif class == "RemoteEvent" or class == "RemoteFunction" or class == "UnreliableRemoteEvent" or class == "BindableEvent" or class == "BindableFunction" then
+    				return true
+    			elseif class == "Tool" or class == "HopperBin" then
+    				return true
+    			end
+    
+    			local children = obj:GetChildren()
+    			for i = 1, #children do
+    				if isViableNilInstance(children[i]) then
+    					return true
+    				end
+    			end
+    			return false
+    		end
     
     		for i = 1,#nilInsts do
     			local obj = nilInsts[i]
-    			if obj ~= game then
+    			if obj ~= game and isViableNilInstance(obj) then
     				nilMap[obj] = true
-    				--newNilRoots[obj] = true
     
-    				local descs = getDescs(obj)
-    				for j = 1,#descs do
-    					nilMap[descs[j]] = true
+    				local ok, descs = pcall(getDescs, obj)
+    				if ok and descs then
+    					for j = 1,#descs do
+    						nilMap[descs[j]] = true
+    					end
     				end
     			end
     		end
     
-    		-- Remove unmapped nil nodes
-    		--[[for i = 1,#nilNode do
-    			local node = nilNode[i]
-    			if not newNilMap[node.Obj] then
-    				nilMap[node.Obj] = nil
-    				coroutine.wrap(removeObject)(node)
-    			end
-    		end]]
-    
-    		--nilMap = newNilMap
-    
     		for i = 1,#nilInsts do
     			local obj = nilInsts[i]
-    			local node = nodes[obj]
-    			if not node then coroutine.wrap(addObject)(obj) end
+    			if nilMap[obj] then
+    				local node = nodes[obj]
+    				if not node then coroutine.wrap(addObject)(obj) end
+    			end
     		end
+    
+    		Explorer.Update()
+    		Explorer.Refresh()
+    	end
     
     		--[[
     		-- Remove old root connections
@@ -3588,6 +3739,7 @@ end,
     				local start = tick()
     				searchFunc(nodes[game])
     				searchFunc(nilNode)
+    				searchFunc(capturedNode)
     				--warn(tick()-start)
     			end
     		end
@@ -3631,6 +3783,19 @@ end,
     			if not node then return end
     
     			local entry = listEntries[ind]
+    
+    			-- Redirect Captured Templates shortcut clicks to the real object!
+    			if node.Obj and node.Obj.Parent == capturedNode.Obj and node.Obj:IsA("ObjectValue") then
+    				local realObj = node.Obj.Value
+    				if realObj and nodes[realObj] then
+    					local realNode = nodes[realObj]
+    					Explorer.MakeNodeVisible(realNode)
+    					selection:Set(realNode)
+    					Explorer.ViewNode(realNode)
+    					Explorer.Refresh()
+    					return
+    				end
+    			end
     
     			if button == 1 then
     				if combo == 2 then
@@ -3840,6 +4005,27 @@ end,
     				end
     			end
     		end
+    	local function registerSniffedTemplate(obj)
+    		if not obj or typeof(obj) ~= "Instance" then return end
+    
+    		local className = obj.ClassName
+    		if className == "Connection" or className == "Player" or obj == game or obj.Parent == game then return end
+    		if ffa(obj, "CoreGui") or ffa(obj, "PluginGuiService") then return end
+    		if obj.Parent == capturedNode.Obj or obj == capturedNode.Obj or obj == nilNode.Obj or obj.Parent == nilNode.Obj then return end
+    
+    		local shortcutName = obj.Name .. " [" .. className .. "]"
+    		if capturedNode.Obj:FindFirstChild(shortcutName) then return end
+    
+    		local shortcut = Instance.new("ObjectValue")
+    		shortcut.Name = shortcutName
+    		shortcut.Value = obj
+    		shortcut.Parent = capturedNode.Obj
+    
+    		if nodes[capturedNode.Obj] then
+    			coroutine.wrap(addObject)(shortcut)
+    			Explorer.Update()
+    			Explorer.Refresh()
+    		end
     	end
     
     	Explorer.Init = function()
@@ -3878,6 +4064,9 @@ end,
     
     		nilNode.Obj.Name = "Nil Instances"
     		nilNode.Locked = true
+    
+    		capturedNode.Obj.Name = "Captured Templates"
+    		capturedNode.Locked = true
     
     		local explorerItems = create({
     			{1,"Folder",{Name="ExplorerItems",}},
@@ -3969,6 +4158,9 @@ end,
     			nodes[nilNode.Obj] = nilNode
     		end
     
+    		-- Captured Templates
+    		nodes[capturedNode.Obj] = capturedNode
+    
     		Explorer.SetupConnections()
     
     		local insts = getDescendants(game)
@@ -3997,6 +4189,40 @@ end,
     				nodes[obj] = newNode
     				par[#par+1] = newNode
     			end
+    		end
+    
+    		-- Auto Scan Nil Instances on startup
+    		task.spawn(function()
+    			pcall(Explorer.RefreshNilInstances)
+    		end)
+    
+    		-- Hook __namecall for Metatable Sniffing
+    		if env.hookmetamethod then
+    			task.spawn(function()
+    				local oldNamecall
+    				oldNamecall = env.hookmetamethod(game, "__namecall", function(self, ...)
+    					local method = getnamecallmethod()
+    					if not env.checkcaller() and typeof(self) == "Instance" then
+    						if method == "Clone" then
+    							task.spawn(pcall, registerSniffedTemplate, self)
+    						elseif method == "FindFirstChild" or method == "WaitForChild" then
+    							local args = {...}
+    							local childName = args[1]
+    							if typeof(childName) == "string" then
+    								task.spawn(function()
+    									pcall(function()
+    										local child = game.FindFirstChild(self, childName)
+    										if child then
+    											registerSniffedTemplate(child)
+    										end
+    									end)
+    								end)
+    							end
+    						end
+    					end
+    					return oldNamecall(self, ...)
+    				end)
+    			end)
     		end
     	end
     
@@ -15031,12 +15257,58 @@ end,
     		return button
     	end
     
-    	local function addResult(entryKey, entry, query, source, snippetOverride)
+    	local function formatAge(epoch)
+    		local stamp = tonumber(epoch or 0)
+    		if not stamp or stamp <= 0 then return nil end
+    		local age = math.max(0, os.time() - stamp)
+    		if age < 60 then return ("%ds ago"):format(age) end
+    		if age < 3600 then return ("%dm ago"):format(math.floor(age / 60)) end
+    		if age < 86400 then return ("%dh ago"):format(math.floor(age / 3600)) end
+    		return ("%dd ago"):format(math.floor(age / 86400))
+    	end
+    
+    	local function formatHelperMeta(metadata)
+    		if type(metadata) ~= "table" then return "" end
+    		local parts = {}
+    		local score = tonumber(metadata.Score or metadata.score or 0)
+    		if score > 0 then parts[#parts + 1] = ("score %d"):format(score) end
+    		local matchType = tostring(metadata.MatchType or metadata.matchType or "")
+    		if matchType ~= "" then parts[#parts + 1] = matchType end
+    		local confidence = tonumber(metadata.Confidence or metadata.confidence or 0)
+    		if confidence > 0 then
+    			parts[#parts + 1] = ("%d%%"):format(math.floor(confidence * 100 + 0.5))
+    		end
+    		local updated = formatAge(metadata.UpdatedAt or metadata.updatedAt)
+    		if updated then parts[#parts + 1] = "updated " .. updated end
+    
+    		local analysis = metadata.Analysis or metadata.analysis
+    		if type(analysis) == "table" then
+    			local stats = {}
+    			if analysis.lines then stats[#stats + 1] = tostring(analysis.lines) .. " lines" end
+    			if analysis.functions then stats[#stats + 1] = tostring(analysis.functions) .. " fn" end
+    			if analysis.remoteCalls then stats[#stats + 1] = tostring(analysis.remoteCalls) .. " remotes" end
+    			if analysis.riskySignals then stats[#stats + 1] = tostring(analysis.riskySignals) .. " risky" end
+    			if #stats > 0 then parts[#parts + 1] = table.concat(stats, " | ") end
+    			if type(analysis.topIdentifiers) == "table" and #analysis.topIdentifiers > 0 then
+    				local preview = {}
+    				for i = 1, math.min(#analysis.topIdentifiers, 3) do
+    					preview[#preview + 1] = tostring(analysis.topIdentifiers[i])
+    				end
+    				parts[#parts + 1] = "ids: " .. table.concat(preview, ", ")
+    			end
+    		end
+    
+    		local matched = tostring(metadata.MatchedToken or metadata.matchedToken or "")
+    		if matched ~= "" then parts[#parts + 1] = 'token "' .. matched .. '"' end
+    		return table.concat(parts, " | ")
+    	end
+    
+    	local function addResult(entryKey, entry, query, source, snippetOverride, metadata)
     		local row = Instance.new("TextButton")
     		row.AutoButtonColor = false
     		row.BackgroundColor3 = Settings.Theme.Main1
     		row.BorderColor3 = Settings.Theme.Outline1
-    		row.Size = UDim2.new(1,-8,0,44)
+    		row.Size = UDim2.new(1,-8,0,52)
     		row.Text = ""
     		row.Parent = resultsFrame
     
@@ -15058,6 +15330,11 @@ end,
     			local startIndex = lowerSource:find(query, 1, true) or 1
     			local snippetStart = math.max(1, startIndex - 45)
     			snippet = source:sub(snippetStart, math.min(#source, startIndex + 95)):gsub("\r", " "):gsub("\n", " ")
+    		end
+    
+    		local metaText = formatHelperMeta(metadata)
+    		if metaText ~= "" then
+    			snippet = snippet ~= "" and (snippet .. " | " .. metaText) or metaText
     		end
     
     		local detail = Instance.new("TextLabel")
@@ -15107,7 +15384,14 @@ end,
     					Path = item.path,
     					Name = item.name,
     					ClassName = item.className,
-    				}, query, "", tostring(item.snippet or "helper source hit"))
+    				}, query, "", tostring(item.snippet or "helper source hit"), {
+    					Score = item.score,
+    					MatchType = item.matchType,
+    					MatchedToken = item.matchedToken,
+    					Confidence = item.confidence,
+    					UpdatedAt = item.updatedAt,
+    					Analysis = item.analysis,
+    				})
     			end
     		end
     		setStatus(("Helper search: %d result(s) from %d indexed script(s)."):format(found, tonumber(decoded.indexed or 0)))
@@ -16589,6 +16873,13 @@ end,
     								ClassName = item.className,
     							},
     							Snippet = tostring(item.snippet or "helper source hit"),
+    							Score = tonumber(item.score or 0),
+    							MatchType = tostring(item.matchType or "helper"),
+    							MatchedToken = tostring(item.matchedToken or ""),
+    							Confidence = tonumber(item.confidence or 0),
+    							UpdatedAt = tonumber(item.updatedAt or 0),
+    							Analysis = item.analysis,
+    							Source = "helper-index",
     						}
     						if limit and #rows >= limit then return rows end
     					end
@@ -16646,6 +16937,17 @@ end,
     			if count % 20 == 0 then task.wait() end
     		end
     		return rows
+    	end
+    	function ClientIndex.GetIndexStatus()
+    		if not env.HelperServer or not env.HelperServer.IndexStatus then return nil end
+    		local active = true
+    		if env.HelperServer.IsActive then active = env.HelperServer.IsActive(false) end
+    		if not active then return nil end
+    		local decoded = decodeJson(env.HelperServer.IndexStatus())
+    		if decoded and decoded.ok == true then
+    			return decoded
+    		end
+    		return nil
     	end
     	function ClientIndex.Path(obj) return getPath(obj) end
     	function ClientIndex.Init()
@@ -18005,6 +18307,46 @@ end,
     		end)
     		return ok and tostring(path) or tostring(obj)
     	end
+    	local function decodeJson(body)
+    		local httpService = service and service.HttpService
+    		if not httpService then
+    			local ok, resolved = pcall(game.GetService, game, "HttpService")
+    			if ok then httpService = resolved end
+    		end
+    		if not httpService or type(body) ~= "string" then return nil end
+    		local ok, decoded = pcall(function()
+    			return httpService:JSONDecode(body)
+    		end)
+    		return ok and decoded or nil
+    	end
+    	local function formatAge(epoch)
+    		local stamp = tonumber(epoch or 0)
+    		if not stamp or stamp <= 0 then return "unknown" end
+    		local age = math.max(0, os.time() - stamp)
+    		if age < 60 then return ("%ds ago"):format(age) end
+    		if age < 3600 then return ("%dm ago"):format(math.floor(age / 60)) end
+    		if age < 86400 then return ("%dh ago"):format(math.floor(age / 3600)) end
+    		return ("%dd ago"):format(math.floor(age / 86400))
+    	end
+    	local function formatCachedHit(row)
+    		local parts = {}
+    		if row.Source then parts[#parts + 1] = tostring(row.Source) end
+    		if row.MatchType then parts[#parts + 1] = tostring(row.MatchType) end
+    		if row.Score and row.Score > 0 then parts[#parts + 1] = "score " .. tostring(row.Score) end
+    		if row.Confidence and row.Confidence > 0 then parts[#parts + 1] = ("%d%%"):format(math.floor(row.Confidence * 100 + 0.5)) end
+    		if row.UpdatedAt and row.UpdatedAt > 0 then parts[#parts + 1] = "updated " .. formatAge(row.UpdatedAt) end
+    		if row.Snippet and tostring(row.Snippet) ~= "" then parts[#parts + 1] = tostring(row.Snippet) end
+    		return table.concat(parts, " | ")
+    	end
+    	local function getHelperIndexStatus()
+    		if env.ClientIndex and env.ClientIndex.GetIndexStatus then
+    			local status = env.ClientIndex.GetIndexStatus()
+    			if status then return status end
+    		end
+    		if not env.HelperServer or not env.HelperServer.IndexStatus then return nil end
+    		if env.HelperServer.IsActive and not env.HelperServer.IsActive(false) then return nil end
+    		return decodeJson(env.HelperServer.IndexStatus())
+    	end
     	local function clearRows()
     		if not listFrame then return end
     		for _, child in pairs(listFrame:GetChildren()) do
@@ -18070,6 +18412,12 @@ end,
     		end
     		divider("Client Surface")
     		textRow(("scripts: %d | remotes: %d | parts: %d | gui objects: %d"):format(#scripts,#remotes,parts,guis), false)
+    		local indexStatus = getHelperIndexStatus()
+    		if indexStatus and indexStatus.ok == true then
+    			textRow(("helper index: %d scripts | %d bytes | fresh %s"):format(tonumber(indexStatus.scripts or 0), tonumber(indexStatus.bytes or 0), formatAge(indexStatus.newestUpdatedAt)), false)
+    		else
+    			textRow("helper index: offline or empty", true)
+    		end
     		divider("Largest Services")
     		local rows = {}
     		for name, count in pairs(services) do table.insert(rows, {Name=name, Count=count}) end
@@ -18152,23 +18500,56 @@ end,
     			end
     			if env.DecompileCache and env.DecompileCache.GetEntries and env.isfile then
     				divider("Cached Code Hits")
-    				local entries, cacheDir = env.DecompileCache.GetEntries()
     				local byKey = scriptByCacheKey()
-    				for key, entry in pairs(entries) do
-    					if token ~= scanToken then return end
-    					if entry.File and env.isfile(cacheDir .. "/" .. tostring(entry.File)) then
-    						local ok, source = pcall(env.readfile, cacheDir .. "/" .. tostring(entry.File))
-    						if ok and type(source) == "string" and (source:lower():find(query,1,true) or tostring(entry.Path or ""):lower():find(query,1,true)) then
-    							found += 1
-    							actionRow(tostring(entry.Path or entry.Name), "cached source hit", function() local scr = byKey[key]; if scr and ScriptViewer then ScriptViewer.ViewScript(scr) end end)
-    							if found >= 80 then break end
-    						end
+    				if env.ClientIndex and env.ClientIndex.SearchCached then
+    					local rows = env.ClientIndex.SearchCached(query, function() return token == scanToken end, 80)
+    					for _, row in ipairs(rows) do
+    						local key, entry = row.Key, row.Entry or {}
+    						found += 1
+    						actionRow(tostring(entry.Path or entry.Name or key), formatCachedHit(row), function() local scr = byKey[key]; if scr and ScriptViewer then ScriptViewer.ViewScript(scr) end end)
     					end
-    					task.wait()
+    				else
+    					local entries, cacheDir = env.DecompileCache.GetEntries()
+    					for key, entry in pairs(entries) do
+    						if token ~= scanToken then return end
+    						if entry.File and env.isfile(cacheDir .. "/" .. tostring(entry.File)) then
+    							local ok, source = pcall(env.readfile, cacheDir .. "/" .. tostring(entry.File))
+    							if ok and type(source) == "string" and (source:lower():find(query,1,true) or tostring(entry.Path or ""):lower():find(query,1,true)) then
+    								found += 1
+    								actionRow(tostring(entry.Path or entry.Name), "cached source hit", function() local scr = byKey[key]; if scr and ScriptViewer then ScriptViewer.ViewScript(scr) end end)
+    								if found >= 80 then break end
+    							end
+    						end
+    						task.wait()
+    					end
     				end
     			end
     			setStatus(("Smart query complete: %d result(s)."):format(found))
     		end)
+    	end
+    	local function showIndexHealth()
+    		clearRows()
+    		window:SetTitle("Client Intelligence - Index")
+    		divider("Semantic Index")
+    		local status = getHelperIndexStatus()
+    		if status and status.ok == true then
+    			textRow(("helper scripts: %d | bytes: %d"):format(tonumber(status.scripts or 0), tonumber(status.bytes or 0)), false)
+    			textRow(("oldest: %s | newest: %s"):format(formatAge(status.oldestUpdatedAt), formatAge(status.newestUpdatedAt)), true)
+    		else
+    			textRow("Helper index unavailable. Run the helper and Code Search > Index Scripts.", true)
+    		end
+    		if env.DecompileCache and env.DecompileCache.GetEntries then
+    			local entries = env.DecompileCache.GetEntries()
+    			local count = 0
+    			for _ in pairs(entries) do count += 1 end
+    			textRow("local cache entries: " .. count, false)
+    		end
+    		local surface = env.ClientIndex and env.ClientIndex.RefreshSurface and env.ClientIndex.RefreshSurface(false)
+    		if surface then
+    			textRow(("client surface: %d instances | %d scripts | %d remotes"):format(#surface.AllInstances, #surface.AllScripts, #surface.Remotes), false)
+    		end
+    		setStatus("Index health ready.")
+    		window:Show()
     	end
     	local function showTimeline()
     		clearRows()
@@ -18217,7 +18598,8 @@ end,
     		makeButton(toolbar,"Query",144,54,showSmartQuery)
     		makeButton(toolbar,"Timeline",204,72,showTimeline)
     		makeButton(toolbar,"Perf",282,50,showPerf)
-    		statusLabel = createSimple("TextLabel",{BackgroundTransparency=1, Font=Enum.Font.SourceSans, Position=UDim2.new(0,340,0,4), Size=UDim2.new(1,-346,0,22), Text="Client-side intelligence dashboard.", TextColor3=Settings.Theme.PlaceholderText, TextSize=14, TextTruncate=Enum.TextTruncate.AtEnd, TextXAlignment=Enum.TextXAlignment.Left, Parent=toolbar})
+    		makeButton(toolbar,"Index",338,52,showIndexHealth)
+    		statusLabel = createSimple("TextLabel",{BackgroundTransparency=1, Font=Enum.Font.SourceSans, Position=UDim2.new(0,398,0,4), Size=UDim2.new(1,-404,0,22), Text="Client-side intelligence dashboard.", TextColor3=Settings.Theme.PlaceholderText, TextSize=14, TextTruncate=Enum.TextTruncate.AtEnd, TextXAlignment=Enum.TextXAlignment.Left, Parent=toolbar})
     		listFrame = createSimple("ScrollingFrame",{Active=true, AutomaticCanvasSize=Enum.AutomaticSize.Y, BackgroundColor3=Settings.Theme.Main2, BorderSizePixel=0, BottomImage="", CanvasSize=UDim2.new(0,0,0,0), Position=UDim2.new(0,0,0,60), ScrollBarImageColor3=Color3.fromRGB(70,70,70), ScrollBarThickness=10, Size=UDim2.new(1,0,1,-60), TopImage="", Parent=content})
     		local layout = Instance.new("UIListLayout")
     		layout.Padding = UDim.new(0,4)
@@ -18229,7 +18611,411 @@ end,
     		queryBox.FocusLost:Connect(function(enterPressed) if enterPressed then showSmartQuery() end end)
     	end
     	ClientIntelligence.ShowSnapshot = showSnapshot
+    	ClientIntelligence.ShowIndexHealth = showIndexHealth
     	return ClientIntelligence
+    end
+    
+    if gethsfuncs then
+    	_G.moduleData = {InitDeps = initDeps, InitAfterMain = initAfterMain, Main = main}
+    else
+    	return {InitDeps = initDeps, InitAfterMain = initAfterMain, Main = main}
+    end
+end,
+["TaskRouter"] = function()
+    --!nocheck
+    --[[
+    	Task Router Module
+    	Assigns task ownership between HelperServer/C++ and Luau-side modules.
+    ]]
+    
+    local Main, Lib, Apps, Settings
+    local Explorer, ScriptViewer, TaskRouter
+    local API, RMD, env, service, plr, create, createSimple
+    
+    local function initDeps(data)
+    	Main = data.Main
+    	Lib = data.Lib
+    	Apps = data.Apps
+    	Settings = data.Settings
+    	API = data.API
+    	RMD = data.RMD
+    	env = data.env
+    	service = data.service
+    	plr = data.plr
+    	create = data.create
+    	createSimple = data.createSimple
+    end
+    
+    local function initAfterMain()
+    	Explorer = Apps.Explorer
+    	ScriptViewer = Apps.ScriptViewer
+    	TaskRouter = Apps.TaskRouter
+    end
+    
+    local function main()
+    	local TaskRouter = {}
+    	local window, inputBox, statusLabel, outputFrame
+    
+    	local function setStatus(text)
+    		if statusLabel then statusLabel.Text = text end
+    	end
+    
+    	local function clearRows()
+    		if not outputFrame then return end
+    		for _, child in pairs(outputFrame:GetChildren()) do
+    			if child:IsA("GuiButton") or child:IsA("TextLabel") or child:IsA("Frame") then
+    				child:Destroy()
+    			end
+    		end
+    	end
+    
+    	local function decodeJson(body)
+    		local httpService = service and service.HttpService
+    		if not httpService then
+    			local ok, resolved = pcall(game.GetService, game, "HttpService")
+    			if ok then httpService = resolved end
+    		end
+    		if not httpService or type(body) ~= "string" then return nil end
+    		local ok, decoded = pcall(function()
+    			return httpService:JSONDecode(body)
+    		end)
+    		return ok and decoded or nil
+    	end
+    
+    	local function countToken(text, token)
+    		local count, pos = 0, 1
+    		while true do
+    			local startPos, endPos = text:find(token, pos, true)
+    			if not startPos then break end
+    			count += 1
+    			pos = endPos + 1
+    		end
+    		return count
+    	end
+    
+    	local roleProfiles = {
+    		{
+    			id = "cxx_helper_core",
+    			label = "C++ Helper Core",
+    			language = "C++",
+    			module = "HelperServer",
+    			summary = "Fast indexing, source analysis, cache maintenance, search, and structured export.",
+    			keywords = {
+    				index = 7, search = 7, cache = 7, analysis = 6, analyze = 6, deobfuscate = 8,
+    				json = 6, parse = 5, source = 4, snippet = 4, dependency = 4, graph = 4,
+    				report = 4, export = 4, log = 3, token = 3, score = 3, pack = 4
+    			}
+    		},
+    		{
+    			id = "luau_ui",
+    			label = "Luau UI / Explorer",
+    			language = "Luau",
+    			module = "Explorer",
+    			summary = "Immediate UI, tree rendering, selection handling, tabs, buttons, and menus.",
+    			keywords = {
+    				ui = 6, window = 6, button = 7, tab = 7, menu = 7, tree = 8, selection = 8,
+    				explorer = 7, panel = 5, label = 4, textbox = 6, render = 6, layout = 6,
+    				context = 5, click = 5, select = 6, copy = 4, view = 4
+    			}
+    		},
+    		{
+    			id = "luau_runtime",
+    			label = "Luau Runtime Monitor",
+    			language = "Luau",
+    			module = "RuntimeInspector",
+    			summary = "Live object capture, remotes, property tracking, timeline, and client state.",
+    			keywords = {
+    				runtime = 8, live = 6, remote = 8, remotes = 8, property = 7, tracker = 6,
+    				timeline = 8, snapshot = 6, capture = 6, monitor = 7, buffer = 5,
+    				record = 5, event = 5, inspector = 7, state = 4
+    			}
+    		},
+    		{
+    			id = "ai_context",
+    			label = "AI Context Packager",
+    			language = "Mixed",
+    			module = "CopyToAI",
+    			summary = "Prompt building, summary packing, context export, and beginner-friendly explanation.",
+    			keywords = {
+    				ai = 8, prompt = 8, context = 8, copy = 6, summar = 7, beginner = 5,
+    				explain = 5, pack = 5, export = 5, guide = 4
+    			}
+    		}
+    	}
+    
+    	local function scoreProfile(text, profile)
+    		local score = 0
+    		local signals = {}
+    		for token, weight in pairs(profile.keywords) do
+    			local hits = countToken(text, token)
+    			if hits > 0 then
+    				score += hits * weight
+    				if #signals < 6 then
+    					signals[#signals + 1] = token
+    				end
+    			end
+    		end
+    		return {Profile = profile, Score = score, Signals = signals}
+    	end
+    
+    	local function buildLocalDecision(taskText)
+    		local text = tostring(taskText or ""):lower()
+    		local scored = {}
+    		for _, profile in ipairs(roleProfiles) do
+    			scored[#scored + 1] = scoreProfile(text, profile)
+    		end
+    		table.sort(scored, function(a, b)
+    			if a.Score == b.Score then
+    				return a.Profile.id < b.Profile.id
+    			end
+    			return a.Score > b.Score
+    		end)
+    
+    		local function confidence(score)
+    			if score <= 0 then return 35 end
+    			return math.min(98, 40 + score * 4)
+    		end
+    
+    		local function pack(item)
+    			if not item then
+    				return {
+    					role = "unknown",
+    					label = "Unknown",
+    					language = "Unknown",
+    					module = "Unknown",
+    					confidence = 35,
+    					score = 0,
+    					summary = "No clear match",
+    					signals = {},
+    				}
+    			end
+    			return {
+    				role = item.Profile.id,
+    				label = item.Profile.label,
+    				language = item.Profile.language,
+    				module = item.Profile.module,
+    				confidence = confidence(item.Score),
+    				score = item.Score,
+    				summary = item.Profile.summary,
+    				signals = item.Signals,
+    			}
+    		end
+    
+    		local primary = pack(scored[1])
+    		local secondary = pack(scored[2])
+    		local workflow = {
+    			"Send heavy, repeated, or cached work to " .. primary.module .. ".",
+    			"Keep UI, selection, and click handling in Luau.",
+    			"Fall back to cache-first flows if the helper is offline.",
+    		}
+    		return {
+    			ok = true,
+    			taskBytes = #taskText,
+    			primary = primary,
+    			secondary = secondary,
+    			workflow = workflow,
+    		}
+    	end
+    
+    	local function getDecision(taskText)
+    		if env.HelperServer and env.HelperServer.AssignRole then
+    			local active = true
+    			if env.HelperServer.IsActive then
+    				active = env.HelperServer.IsActive(false)
+    			end
+    			if active then
+    				local body = env.HelperServer.AssignRole(taskText)
+    				local decoded = decodeJson(body)
+    				if decoded and decoded.ok == true then
+    					return decoded, "helper"
+    				end
+    			end
+    		end
+    		return buildLocalDecision(taskText), "local"
+    	end
+    
+    	local function renderDecision(decision, sourceKind)
+    		clearRows()
+    		if not decision then
+    			setStatus("No decision produced.")
+    			return
+    		end
+    
+    		local primary = decision.primary or {}
+    		local secondary = decision.secondary or {}
+    		local rows = {
+    			("Primary: %s [%s]"):format(tostring(primary.label or "Unknown"), tostring(primary.language or "Unknown")),
+    			("Module: %s | Confidence: %s%% | Source: %s"):format(tostring(primary.module or "Unknown"), tostring(primary.confidence or 0), sourceKind or "local"),
+    			("Why: %s"):format(tostring(primary.summary or "")),
+    			("Signals: %s"):format(#(primary.signals or {}) > 0 and table.concat(primary.signals, ", ") or "none"),
+    			("Secondary: %s [%s]"):format(tostring(secondary.label or "Unknown"), tostring(secondary.language or "Unknown")),
+    		}
+    
+    		for _, text in ipairs(rows) do
+    			local label = createSimple("TextLabel", {
+    				BackgroundTransparency = 1,
+    				Font = Enum.Font.SourceSans,
+    				Size = UDim2.new(1, -8, 0, 22),
+    				Text = text,
+    				TextColor3 = Settings.Theme.Text,
+    				TextSize = 14,
+    				TextTruncate = Enum.TextTruncate.AtEnd,
+    				TextXAlignment = Enum.TextXAlignment.Left,
+    				Parent = outputFrame
+    			})
+    			local pad = Instance.new("UIPadding")
+    			pad.PaddingLeft = UDim.new(0, 6)
+    			pad.Parent = label
+    		end
+    
+    		for _, step in ipairs(decision.workflow or {}) do
+    			local label = createSimple("TextLabel", {
+    				BackgroundTransparency = 1,
+    				Font = Enum.Font.SourceSans,
+    				Size = UDim2.new(1, -8, 0, 20),
+    				Text = "- " .. tostring(step),
+    				TextColor3 = Settings.Theme.PlaceholderText,
+    				TextSize = 13,
+    				TextTruncate = Enum.TextTruncate.AtEnd,
+    				TextXAlignment = Enum.TextXAlignment.Left,
+    				Parent = outputFrame
+    			})
+    			local pad = Instance.new("UIPadding")
+    			pad.PaddingLeft = UDim.new(0, 6)
+    			pad.Parent = label
+    		end
+    
+    		setStatus(("Task routed via %s."):format(sourceKind or "local"))
+    	end
+    
+    	TaskRouter.RouteTask = function(taskText)
+    		local decision, sourceKind = getDecision(taskText)
+    		return decision, sourceKind
+    	end
+    
+    	TaskRouter.ShowTask = function(taskText)
+    		local decision, sourceKind = getDecision(taskText)
+    		renderDecision(decision, sourceKind)
+    		return decision, sourceKind
+    	end
+    
+    	TaskRouter.Init = function()
+    		window = Lib.Window.new()
+    		window:SetTitle("Task Router")
+    		window:Resize(640, 380)
+    		TaskRouter.Window = window
+    
+    		local content = window.GuiElems.Content
+    		local toolbar = createSimple("Frame", {
+    			BackgroundColor3 = Settings.Theme.Main2,
+    			BorderSizePixel = 0,
+    			Size = UDim2.new(1, 0, 0, 66),
+    			Parent = content
+    		})
+    
+    		inputBox = createSimple("TextBox", {
+    			BackgroundColor3 = Settings.Theme.TextBox,
+    			BorderColor3 = Settings.Theme.Outline3,
+    			ClearTextOnFocus = false,
+    			Font = Enum.Font.SourceSans,
+    			PlaceholderColor3 = Settings.Theme.PlaceholderText,
+    			PlaceholderText = "Describe the task, module, or workflow to route...",
+    			Position = UDim2.new(0, 6, 0, 34),
+    			Size = UDim2.new(1, -12, 0, 22),
+    			Text = "",
+    			TextColor3 = Settings.Theme.Text,
+    			TextSize = 14,
+    			TextXAlignment = Enum.TextXAlignment.Left,
+    			Parent = toolbar
+    		})
+    
+    		statusLabel = createSimple("TextLabel", {
+    			BackgroundTransparency = 1,
+    			Font = Enum.Font.SourceSans,
+    			Position = UDim2.new(0, 140, 0, 6),
+    			Size = UDim2.new(1, -146, 0, 20),
+    			Text = "Route work to the engine that fits it best.",
+    			TextColor3 = Settings.Theme.PlaceholderText,
+    			TextSize = 14,
+    			TextTruncate = Enum.TextTruncate.AtEnd,
+    			TextXAlignment = Enum.TextXAlignment.Left,
+    			Parent = toolbar
+    		})
+    
+    		local routeButton = createSimple("TextButton", {
+    			BackgroundColor3 = Settings.Theme.Button,
+    			BorderColor3 = Settings.Theme.Outline2,
+    			Font = Enum.Font.SourceSans,
+    			Position = UDim2.new(0, 6, 0, 6),
+    			Size = UDim2.new(0, 72, 0, 22),
+    			Text = "Route",
+    			TextColor3 = Settings.Theme.Text,
+    			TextSize = 14,
+    			Parent = toolbar
+    		})
+    		local clearButton = createSimple("TextButton", {
+    			BackgroundColor3 = Settings.Theme.Button,
+    			BorderColor3 = Settings.Theme.Outline2,
+    			Font = Enum.Font.SourceSans,
+    			Position = UDim2.new(0, 84, 0, 6),
+    			Size = UDim2.new(0, 54, 0, 22),
+    			Text = "Clear",
+    			TextColor3 = Settings.Theme.Text,
+    			TextSize = 14,
+    			Parent = toolbar
+    		})
+    
+    		outputFrame = createSimple("ScrollingFrame", {
+    			Active = true,
+    			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    			BackgroundColor3 = Settings.Theme.Main2,
+    			BorderSizePixel = 0,
+    			BottomImage = "",
+    			CanvasSize = UDim2.new(0, 0, 0, 0),
+    			Position = UDim2.new(0, 0, 0, 66),
+    			ScrollBarImageColor3 = Color3.fromRGB(70, 70, 70),
+    			ScrollBarThickness = 10,
+    			Size = UDim2.new(1, 0, 1, -66),
+    			TopImage = "",
+    			Parent = content
+    		})
+    
+    		local layout = Instance.new("UIListLayout")
+    		layout.Padding = UDim.new(0, 4)
+    		layout.SortOrder = Enum.SortOrder.LayoutOrder
+    		layout.Parent = outputFrame
+    
+    		local padding = Instance.new("UIPadding")
+    		padding.PaddingBottom = UDim.new(0, 6)
+    		padding.PaddingLeft = UDim.new(0, 4)
+    		padding.PaddingRight = UDim.new(0, 4)
+    		padding.PaddingTop = UDim.new(0, 4)
+    		padding.Parent = outputFrame
+    
+    		routeButton.MouseButton1Click:Connect(function()
+    			local text = tostring(inputBox.Text or "")
+    			if text == "" then
+    				setStatus("Type a task first.")
+    				clearRows()
+    				return
+    			end
+    			TaskRouter.ShowTask(text)
+    		end)
+    
+    		clearButton.MouseButton1Click:Connect(function()
+    			inputBox.Text = ""
+    			clearRows()
+    			setStatus("Cleared.")
+    		end)
+    
+    		inputBox.FocusLost:Connect(function(enterPressed)
+    			if enterPressed then
+    				TaskRouter.ShowTask(tostring(inputBox.Text or ""))
+    			end
+    		end)
+    	end
+    
+    	return TaskRouter
     end
     
     if gethsfuncs then
@@ -19525,7 +20311,7 @@ end
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, ScriptViewer, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, TaskRouter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -19683,7 +20469,7 @@ end
 Main = (function()
 	local Main = {}
 
-	Main.ModuleList = {"Theme","SmartDecompiler","Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","CodeSearch","ScriptRelations","RemoteUsageMap","ObjectLinks","ImageViewer","ClientIndex","ActivityMap","DependencyGraph","SmartSearch","RuntimeInspector","ClientIntelligence","SecurityAuditor","RemoteFuzzer","PropertyTracker","InstanceSerializer","ThreadManager"}
+	Main.ModuleList = {"Theme","SmartDecompiler","Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","CodeSearch","ScriptRelations","RemoteUsageMap","ObjectLinks","ImageViewer","ClientIndex","ActivityMap","DependencyGraph","SmartSearch","RuntimeInspector","ClientIntelligence","TaskRouter","SecurityAuditor","RemoteFuzzer","PropertyTracker","InstanceSerializer","ThreadManager"}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
 	Main.MissingEnv = {}
@@ -19967,6 +20753,7 @@ Main = (function()
 		SmartSearch = Apps.SmartSearch
 		RuntimeInspector = Apps.RuntimeInspector
 		ClientIntelligence = Apps.ClientIntelligence
+		TaskRouter = Apps.TaskRouter
 		Theme = Apps.Theme
 		SmartDecompiler = Apps.SmartDecompiler
 		SecurityAuditor = Apps.SecurityAuditor
@@ -19999,6 +20786,7 @@ Main = (function()
 			SmartSearch = SmartSearch,
 			RuntimeInspector = RuntimeInspector,
 			ClientIntelligence = ClientIntelligence,
+			TaskRouter = TaskRouter,
 			SecurityAuditor = SecurityAuditor,
 			RemoteFuzzer = RemoteFuzzer,
 			PropertyTracker = PropertyTracker,
@@ -20325,6 +21113,14 @@ Main = (function()
 			function helper.ClearSourceIndex()
 				local result = helper.Request("/index-clear", "POST", "", "text/plain")
 				return result and result.StatusCode == 200
+			end
+
+			function helper.AssignRole(task)
+				local result = helper.Request("/assign-role", "POST", tostring(task or ""), "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
 			end
 
 			function helper.Log(line)
@@ -21776,6 +22572,8 @@ Main = (function()
 
 		Main.CreateApp({Name = "Client Intelligence", IconMap = Main.LargeIcons, Icon = "Output", Window = ClientIntelligence.Window})
 
+		Main.CreateApp({Name = "Task Router", IconMap = Main.LargeIcons, Icon = "ScriptEdit", Window = TaskRouter.Window})
+
 		Main.CreateApp({Name = "Security Auditor", IconMap = Main.LargeIcons, Icon = "Watcher", Window = SecurityAuditor.Window})
 		Main.CreateApp({Name = "Property Tracker", IconMap = Main.LargeIcons, Icon = "Watcher", Window = PropertyTracker.Window})
 		Main.CreateApp({Name = "Thread Manager", IconMap = Main.LargeIcons, Icon = "ScriptEdit", Window = ThreadManager.Window})
@@ -21933,6 +22731,7 @@ Main = (function()
 		SmartSearch.Init()
 		RuntimeInspector.Init()
 		ClientIntelligence.Init()
+		TaskRouter.Init()
 		SecurityAuditor.Init()
 		--SecretServicePanel.Init()
 		

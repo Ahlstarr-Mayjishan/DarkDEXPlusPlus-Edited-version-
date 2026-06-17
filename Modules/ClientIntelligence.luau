@@ -34,6 +34,46 @@ local function main()
 		end)
 		return ok and tostring(path) or tostring(obj)
 	end
+	local function decodeJson(body)
+		local httpService = service and service.HttpService
+		if not httpService then
+			local ok, resolved = pcall(game.GetService, game, "HttpService")
+			if ok then httpService = resolved end
+		end
+		if not httpService or type(body) ~= "string" then return nil end
+		local ok, decoded = pcall(function()
+			return httpService:JSONDecode(body)
+		end)
+		return ok and decoded or nil
+	end
+	local function formatAge(epoch)
+		local stamp = tonumber(epoch or 0)
+		if not stamp or stamp <= 0 then return "unknown" end
+		local age = math.max(0, os.time() - stamp)
+		if age < 60 then return ("%ds ago"):format(age) end
+		if age < 3600 then return ("%dm ago"):format(math.floor(age / 60)) end
+		if age < 86400 then return ("%dh ago"):format(math.floor(age / 3600)) end
+		return ("%dd ago"):format(math.floor(age / 86400))
+	end
+	local function formatCachedHit(row)
+		local parts = {}
+		if row.Source then parts[#parts + 1] = tostring(row.Source) end
+		if row.MatchType then parts[#parts + 1] = tostring(row.MatchType) end
+		if row.Score and row.Score > 0 then parts[#parts + 1] = "score " .. tostring(row.Score) end
+		if row.Confidence and row.Confidence > 0 then parts[#parts + 1] = ("%d%%"):format(math.floor(row.Confidence * 100 + 0.5)) end
+		if row.UpdatedAt and row.UpdatedAt > 0 then parts[#parts + 1] = "updated " .. formatAge(row.UpdatedAt) end
+		if row.Snippet and tostring(row.Snippet) ~= "" then parts[#parts + 1] = tostring(row.Snippet) end
+		return table.concat(parts, " | ")
+	end
+	local function getHelperIndexStatus()
+		if env.ClientIndex and env.ClientIndex.GetIndexStatus then
+			local status = env.ClientIndex.GetIndexStatus()
+			if status then return status end
+		end
+		if not env.HelperServer or not env.HelperServer.IndexStatus then return nil end
+		if env.HelperServer.IsActive and not env.HelperServer.IsActive(false) then return nil end
+		return decodeJson(env.HelperServer.IndexStatus())
+	end
 	local function clearRows()
 		if not listFrame then return end
 		for _, child in pairs(listFrame:GetChildren()) do
@@ -99,6 +139,12 @@ local function main()
 		end
 		divider("Client Surface")
 		textRow(("scripts: %d | remotes: %d | parts: %d | gui objects: %d"):format(#scripts,#remotes,parts,guis), false)
+		local indexStatus = getHelperIndexStatus()
+		if indexStatus and indexStatus.ok == true then
+			textRow(("helper index: %d scripts | %d bytes | fresh %s"):format(tonumber(indexStatus.scripts or 0), tonumber(indexStatus.bytes or 0), formatAge(indexStatus.newestUpdatedAt)), false)
+		else
+			textRow("helper index: offline or empty", true)
+		end
 		divider("Largest Services")
 		local rows = {}
 		for name, count in pairs(services) do table.insert(rows, {Name=name, Count=count}) end
@@ -181,23 +227,56 @@ local function main()
 			end
 			if env.DecompileCache and env.DecompileCache.GetEntries and env.isfile then
 				divider("Cached Code Hits")
-				local entries, cacheDir = env.DecompileCache.GetEntries()
 				local byKey = scriptByCacheKey()
-				for key, entry in pairs(entries) do
-					if token ~= scanToken then return end
-					if entry.File and env.isfile(cacheDir .. "/" .. tostring(entry.File)) then
-						local ok, source = pcall(env.readfile, cacheDir .. "/" .. tostring(entry.File))
-						if ok and type(source) == "string" and (source:lower():find(query,1,true) or tostring(entry.Path or ""):lower():find(query,1,true)) then
-							found += 1
-							actionRow(tostring(entry.Path or entry.Name), "cached source hit", function() local scr = byKey[key]; if scr and ScriptViewer then ScriptViewer.ViewScript(scr) end end)
-							if found >= 80 then break end
-						end
+				if env.ClientIndex and env.ClientIndex.SearchCached then
+					local rows = env.ClientIndex.SearchCached(query, function() return token == scanToken end, 80)
+					for _, row in ipairs(rows) do
+						local key, entry = row.Key, row.Entry or {}
+						found += 1
+						actionRow(tostring(entry.Path or entry.Name or key), formatCachedHit(row), function() local scr = byKey[key]; if scr and ScriptViewer then ScriptViewer.ViewScript(scr) end end)
 					end
-					task.wait()
+				else
+					local entries, cacheDir = env.DecompileCache.GetEntries()
+					for key, entry in pairs(entries) do
+						if token ~= scanToken then return end
+						if entry.File and env.isfile(cacheDir .. "/" .. tostring(entry.File)) then
+							local ok, source = pcall(env.readfile, cacheDir .. "/" .. tostring(entry.File))
+							if ok and type(source) == "string" and (source:lower():find(query,1,true) or tostring(entry.Path or ""):lower():find(query,1,true)) then
+								found += 1
+								actionRow(tostring(entry.Path or entry.Name), "cached source hit", function() local scr = byKey[key]; if scr and ScriptViewer then ScriptViewer.ViewScript(scr) end end)
+								if found >= 80 then break end
+							end
+						end
+						task.wait()
+					end
 				end
 			end
 			setStatus(("Smart query complete: %d result(s)."):format(found))
 		end)
+	end
+	local function showIndexHealth()
+		clearRows()
+		window:SetTitle("Client Intelligence - Index")
+		divider("Semantic Index")
+		local status = getHelperIndexStatus()
+		if status and status.ok == true then
+			textRow(("helper scripts: %d | bytes: %d"):format(tonumber(status.scripts or 0), tonumber(status.bytes or 0)), false)
+			textRow(("oldest: %s | newest: %s"):format(formatAge(status.oldestUpdatedAt), formatAge(status.newestUpdatedAt)), true)
+		else
+			textRow("Helper index unavailable. Run the helper and Code Search > Index Scripts.", true)
+		end
+		if env.DecompileCache and env.DecompileCache.GetEntries then
+			local entries = env.DecompileCache.GetEntries()
+			local count = 0
+			for _ in pairs(entries) do count += 1 end
+			textRow("local cache entries: " .. count, false)
+		end
+		local surface = env.ClientIndex and env.ClientIndex.RefreshSurface and env.ClientIndex.RefreshSurface(false)
+		if surface then
+			textRow(("client surface: %d instances | %d scripts | %d remotes"):format(#surface.AllInstances, #surface.AllScripts, #surface.Remotes), false)
+		end
+		setStatus("Index health ready.")
+		window:Show()
 	end
 	local function showTimeline()
 		clearRows()
@@ -246,7 +325,8 @@ local function main()
 		makeButton(toolbar,"Query",144,54,showSmartQuery)
 		makeButton(toolbar,"Timeline",204,72,showTimeline)
 		makeButton(toolbar,"Perf",282,50,showPerf)
-		statusLabel = createSimple("TextLabel",{BackgroundTransparency=1, Font=Enum.Font.SourceSans, Position=UDim2.new(0,340,0,4), Size=UDim2.new(1,-346,0,22), Text="Client-side intelligence dashboard.", TextColor3=Settings.Theme.PlaceholderText, TextSize=14, TextTruncate=Enum.TextTruncate.AtEnd, TextXAlignment=Enum.TextXAlignment.Left, Parent=toolbar})
+		makeButton(toolbar,"Index",338,52,showIndexHealth)
+		statusLabel = createSimple("TextLabel",{BackgroundTransparency=1, Font=Enum.Font.SourceSans, Position=UDim2.new(0,398,0,4), Size=UDim2.new(1,-404,0,22), Text="Client-side intelligence dashboard.", TextColor3=Settings.Theme.PlaceholderText, TextSize=14, TextTruncate=Enum.TextTruncate.AtEnd, TextXAlignment=Enum.TextXAlignment.Left, Parent=toolbar})
 		listFrame = createSimple("ScrollingFrame",{Active=true, AutomaticCanvasSize=Enum.AutomaticSize.Y, BackgroundColor3=Settings.Theme.Main2, BorderSizePixel=0, BottomImage="", CanvasSize=UDim2.new(0,0,0,0), Position=UDim2.new(0,0,0,60), ScrollBarImageColor3=Color3.fromRGB(70,70,70), ScrollBarThickness=10, Size=UDim2.new(1,0,1,-60), TopImage="", Parent=content})
 		local layout = Instance.new("UIListLayout")
 		layout.Padding = UDim.new(0,4)
@@ -258,6 +338,7 @@ local function main()
 		queryBox.FocusLost:Connect(function(enterPressed) if enterPressed then showSmartQuery() end end)
 	end
 	ClientIntelligence.ShowSnapshot = showSnapshot
+	ClientIntelligence.ShowIndexHealth = showIndexHealth
 	return ClientIntelligence
 end
 
