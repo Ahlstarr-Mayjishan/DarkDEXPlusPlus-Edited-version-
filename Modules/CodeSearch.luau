@@ -38,6 +38,7 @@ local function main()
 	local window, searchBox, statusLabel, resultsFrame
 	local indexing = false
 	local currentScriptsByKey = {}
+	local indexedKeys = {}
 
 	local function setStatus(text)
 		if statusLabel then
@@ -89,6 +90,18 @@ local function main()
 				currentScriptsByKey[key] = scriptInstance
 			end
 		end
+	end
+
+	local function getScriptKey(scriptInstance)
+		if not env.DecompileCache or not env.DecompileCache.GetScriptKey then return nil end
+		local success, key = pcall(env.DecompileCache.GetScriptKey, scriptInstance)
+		return success and key or nil
+	end
+
+	local function hasFreshCache(scriptInstance)
+		if not env.DecompileCache or not env.DecompileCache.HasFresh then return false end
+		local success, fresh = pcall(env.DecompileCache.HasFresh, scriptInstance)
+		return success and fresh == true
 	end
 
 	local function clearResults()
@@ -226,7 +239,9 @@ local function main()
 		task.spawn(function()
 			local scripts = collectScripts()
 			local total = #scripts
-			local indexed = 0
+			local decompiled = 0
+			local cached = 0
+			local failed = 0
 
 			if total == 0 then
 				indexing = false
@@ -238,7 +253,21 @@ local function main()
 				if not indexing then break end
 
 				local percent = math.floor((i / total) * 1000) / 10
-				setStatus(("Indexing: %d / %d scripts (%.1f%%)"):format(i, total, percent))
+				setStatus(("Indexing: %d / %d (%.1f%%) | cached %d | new %d | failed %d"):format(i, total, percent, cached, decompiled, failed))
+
+				local key = getScriptKey(scriptInstance)
+				if key and indexedKeys[key] and hasFreshCache(scriptInstance) then
+					cached += 1
+					task.wait()
+					continue
+				end
+
+				if hasFreshCache(scriptInstance) then
+					if key then indexedKeys[key] = true end
+					cached += 1
+					task.wait()
+					continue
+				end
 
 				local success
 				if env.DecompileQueue and env.DecompileQueue.Submit then
@@ -247,7 +276,10 @@ local function main()
 					success = pcall(env.decompile, scriptInstance)
 				end
 				if success then
-					indexed += 1
+					decompiled += 1
+					if key then indexedKeys[key] = true end
+				else
+					failed += 1
 				end
 
 				task.wait(0.08)
@@ -257,9 +289,9 @@ local function main()
 			rebuildScriptLookup()
 			if env.GetClientSurfaceCoverage then
 				local coverage = env.GetClientSurfaceCoverage()
-				setStatus(("Index complete: %d / %d processed. Surface: %d scripts, %d remotes."):format(indexed, total, coverage.AllScripts, coverage.Remotes))
+				setStatus(("Index complete: %d cached, %d decompiled, %d failed. Surface: %d scripts, %d remotes."):format(cached, decompiled, failed, coverage.AllScripts, coverage.Remotes))
 			else
-				setStatus(("Index complete: %d / %d scripts processed."):format(indexed, total))
+				setStatus(("Index complete: %d cached, %d decompiled, %d failed."):format(cached, decompiled, failed))
 			end
 		end)
 	end

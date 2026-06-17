@@ -937,6 +937,19 @@ Main = (function()
 				loadMetadata()
 				return metadata.Scripts, placeDir
 			end
+			cache.HasFresh = function(script_instance)
+				loadMetadata()
+				if not ensureCacheFolders() then return false end
+
+				local info = getInfo(script_instance)
+				if not info or not info.Hash then return false end
+
+				local entry = metadata.Scripts[info.Key]
+				if not entry or entry.Hash ~= info.Hash then return false end
+
+				local path = placeDir .. "/" .. tostring(entry.File or info.File)
+				return env.isfile(path)
+			end
 			cache.Read = function(script_instance)
 				loadMetadata()
 				if not ensureCacheFolders() then return nil, "Filesystem APIs are unavailable." end
