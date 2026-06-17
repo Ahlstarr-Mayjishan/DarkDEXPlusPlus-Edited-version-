@@ -39,6 +39,7 @@ local function main()
 	local indexing = false
 	local currentScriptsByKey = {}
 	local indexedKeys = {}
+	local helperIndexedKeys = {}
 
 	local function setStatus(text)
 		if statusLabel then
@@ -48,6 +49,19 @@ local function main()
 
 	local function canUseCache()
 		return env.DecompileCache and env.DecompileCache.IsReady and env.DecompileCache.IsReady()
+	end
+
+	local function decodeJson(body)
+		local httpService = service and service.HttpService
+		if not httpService then
+			local ok, resolved = pcall(game.GetService, game, "HttpService")
+			if ok then httpService = resolved end
+		end
+		if not httpService or type(body) ~= "string" then return nil end
+		local ok, decoded = pcall(function()
+			return httpService:JSONDecode(body)
+		end)
+		return ok and decoded or nil
 	end
 
 	local function isSearchableScript(obj)
@@ -146,7 +160,7 @@ local function main()
 		return button
 	end
 
-	local function addResult(entryKey, entry, query, source)
+	local function addResult(entryKey, entry, query, source, snippetOverride)
 		local row = Instance.new("TextButton")
 		row.AutoButtonColor = false
 		row.BackgroundColor3 = Settings.Theme.Main1
@@ -167,10 +181,13 @@ local function main()
 		name.TextXAlignment = Enum.TextXAlignment.Left
 		name.Parent = row
 
-		local lowerSource = source:lower()
-		local startIndex = lowerSource:find(query, 1, true) or 1
-		local snippetStart = math.max(1, startIndex - 45)
-		local snippet = source:sub(snippetStart, math.min(#source, startIndex + 95)):gsub("\r", " "):gsub("\n", " ")
+		local snippet = snippetOverride
+		if not snippet then
+			local lowerSource = source:lower()
+			local startIndex = lowerSource:find(query, 1, true) or 1
+			local snippetStart = math.max(1, startIndex - 45)
+			snippet = source:sub(snippetStart, math.min(#source, startIndex + 95)):gsub("\r", " "):gsub("\n", " ")
+		end
 
 		local detail = Instance.new("TextLabel")
 		detail.BackgroundTransparency = 1
@@ -196,6 +213,63 @@ local function main()
 		end)
 	end
 
+	local function searchWithHelper(query)
+		if not env.HelperServer or not env.HelperServer.SearchSource then return false end
+		if env.HelperServer.IsActive and not env.HelperServer.IsActive(false) then return false end
+
+		local body = env.HelperServer.SearchSource(query, 120)
+		local decoded = decodeJson(body)
+		if not decoded or decoded.ok ~= true or type(decoded.results) ~= "table" then
+			return false
+		end
+		if tonumber(decoded.indexed or 0) <= 0 then
+			return false
+		end
+
+		rebuildScriptLookup()
+		local found = 0
+		for _, item in ipairs(decoded.results) do
+			local key = tostring(item.key or "")
+			if key ~= "" then
+				found += 1
+				addResult(key, {
+					Path = item.path,
+					Name = item.name,
+					ClassName = item.className,
+				}, query, "", tostring(item.snippet or "helper source hit"))
+			end
+		end
+		setStatus(("Helper search: %d result(s) from %d indexed script(s)."):format(found, tonumber(decoded.indexed or 0)))
+		return true
+	end
+
+	local function pushToHelperIndex(scriptInstance, key)
+		if not key or not env.HelperServer or not env.HelperServer.IndexSource then return false end
+		if helperIndexedKeys[key] then return false end
+		if env.HelperServer.IsActive and not env.HelperServer.IsActive(false) then return false end
+		if not env.DecompileCache or not env.DecompileCache.Read then return false end
+
+		local okSource, source = pcall(env.DecompileCache.Read, scriptInstance)
+		if not okSource or type(source) ~= "string" then return false end
+
+		local okPath, path = pcall(function()
+			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(scriptInstance) end
+			return scriptInstance:GetFullName()
+		end)
+		local result = env.HelperServer.IndexSource(
+			key,
+			okPath and tostring(path) or scriptInstance:GetFullName(),
+			scriptInstance.Name,
+			scriptInstance.ClassName,
+			source
+		)
+		if type(result) == "string" then
+			helperIndexedKeys[key] = true
+			return true
+		end
+		return false
+	end
+
 	CodeSearch.Search = function()
 		if not canUseCache() then
 			clearResults()
@@ -207,6 +281,10 @@ local function main()
 		clearResults()
 		if query == "" then
 			setStatus("Enter a keyword to search cached code.")
+			return
+		end
+
+		if searchWithHelper(query) then
 			return
 		end
 
@@ -259,6 +337,7 @@ local function main()
 			local decompiled = 0
 			local cached = 0
 			local failed = 0
+			local helperIndexed = 0
 			local batchCount = 0
 
 			if total == 0 then
@@ -280,6 +359,7 @@ local function main()
 				local key = getScriptKey(scriptInstance)
 				if key and indexedKeys[key] and hasCachedFile(scriptInstance) then
 					cached += 1
+					if pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
 					batchCount += 1
 					if batchCount % 100 == 0 then
 						task.wait()
@@ -290,6 +370,7 @@ local function main()
 				if hasCachedFile(scriptInstance) then
 					if key then indexedKeys[key] = true end
 					cached += 1
+					if pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
 					batchCount += 1
 					if batchCount % 100 == 0 then
 						task.wait()
@@ -306,6 +387,7 @@ local function main()
 				if success then
 					decompiled += 1
 					if key then indexedKeys[key] = true end
+					if key and pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
 				else
 					failed += 1
 				end
@@ -317,9 +399,9 @@ local function main()
 			rebuildScriptLookup()
 			if env.GetClientSurfaceCoverage then
 				local coverage = env.GetClientSurfaceCoverage()
-				setStatus(("Index complete: %d cached, %d decompiled, %d failed. Surface: %d scripts, %d remotes."):format(cached, decompiled, failed, coverage.AllScripts, coverage.Remotes))
+				setStatus(("Index complete: %d cached, %d decompiled, %d failed, %d helper. Surface: %d scripts, %d remotes."):format(cached, decompiled, failed, helperIndexed, coverage.AllScripts, coverage.Remotes))
 			else
-				setStatus(("Index complete: %d cached, %d decompiled, %d failed."):format(cached, decompiled, failed))
+				setStatus(("Index complete: %d cached, %d decompiled, %d failed, %d helper."):format(cached, decompiled, failed, helperIndexed))
 			end
 		end)
 	end

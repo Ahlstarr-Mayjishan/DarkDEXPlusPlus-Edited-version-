@@ -283,6 +283,13 @@ end,
     
     	-- 3. Variable Normalizer: Maps obfuscated variables to var_1, var_2, etc.
     	function SmartDecompiler.NormalizeVariables(source)
+    		if env.HelperServer and env.HelperServer.Deobfuscate then
+    			local helperResult = env.HelperServer.Deobfuscate(source)
+    			if helperResult then
+    				return helperResult
+    			end
+    		end
+    
     		local req = env.request or (syn and syn.request) or (http and http.request) or http_request or request
     		if req then
     			local success, result = pcall(function()
@@ -2642,6 +2649,15 @@ end,
     				end
     				if env.isViableDecompileScript then
     					push("  Decompileable: " .. tostring(env.isViableDecompileScript(obj)))
+    				end
+    				if env.DecompileCache and env.DecompileCache.Read and env.HelperServer and env.HelperServer.AnalyzeSource then
+    					local cacheOk, cachedSource = pcall(env.DecompileCache.Read, obj)
+    					if cacheOk and type(cachedSource) == "string" then
+    						local helperOk, analysis = pcall(env.HelperServer.AnalyzeSource, cachedSource)
+    						if helperOk and type(analysis) == "string" and #analysis > 0 then
+    							push("  Cached source analysis: " .. analysis)
+    						end
+    					end
     				end
     			end
     			return table.concat(lines, "\n")
@@ -14766,6 +14782,7 @@ end,
     		AddSeperator("Decompiler")
     		AddText("If executor does not support decompile, it will use the fallback option.")
     		AddText("'getbytecode' is mandatory to use fallback decompilers.")
+    		AddText("Local C++ Helper handles /script, /deobfuscate and /log; it does not decompile bytecode.")
     		local decompilerOption = {"Executor (Native)", "Konstant", "AdvancedDecompiler", "Shiny"}
     		local initialSelected = "Executor (Native)"
     		if Settings.Decompiler.PreferDecompilerFallback then
@@ -14794,6 +14811,18 @@ end,
     				else
     					ShinyPort.Text = Settings.Decompiler.ShinyDecompilerPort
     				end
+    			end
+    		end)
+    
+    		local HelperPort = AddTextbox("Local Helper Port", tostring(Settings.Decompiler.HelperServerPort or 8080), 50)
+    		HelperPort.FocusLost:Connect(function()
+    			local portinput = tonumber(HelperPort.Text)
+    			if not portinput then
+    				HelperPort.Text = tostring(Settings.Decompiler.HelperServerPort or 8080)
+    			elseif portinput > 0 and portinput <= 65535 then
+    				Settings.Decompiler.HelperServerPort = portinput
+    			else
+    				HelperPort.Text = tostring(Settings.Decompiler.HelperServerPort or 8080)
     			end
     		end)
     		
@@ -14881,6 +14910,7 @@ end,
     	local indexing = false
     	local currentScriptsByKey = {}
     	local indexedKeys = {}
+    	local helperIndexedKeys = {}
     
     	local function setStatus(text)
     		if statusLabel then
@@ -14890,6 +14920,19 @@ end,
     
     	local function canUseCache()
     		return env.DecompileCache and env.DecompileCache.IsReady and env.DecompileCache.IsReady()
+    	end
+    
+    	local function decodeJson(body)
+    		local httpService = service and service.HttpService
+    		if not httpService then
+    			local ok, resolved = pcall(game.GetService, game, "HttpService")
+    			if ok then httpService = resolved end
+    		end
+    		if not httpService or type(body) ~= "string" then return nil end
+    		local ok, decoded = pcall(function()
+    			return httpService:JSONDecode(body)
+    		end)
+    		return ok and decoded or nil
     	end
     
     	local function isSearchableScript(obj)
@@ -14988,7 +15031,7 @@ end,
     		return button
     	end
     
-    	local function addResult(entryKey, entry, query, source)
+    	local function addResult(entryKey, entry, query, source, snippetOverride)
     		local row = Instance.new("TextButton")
     		row.AutoButtonColor = false
     		row.BackgroundColor3 = Settings.Theme.Main1
@@ -15009,10 +15052,13 @@ end,
     		name.TextXAlignment = Enum.TextXAlignment.Left
     		name.Parent = row
     
-    		local lowerSource = source:lower()
-    		local startIndex = lowerSource:find(query, 1, true) or 1
-    		local snippetStart = math.max(1, startIndex - 45)
-    		local snippet = source:sub(snippetStart, math.min(#source, startIndex + 95)):gsub("\r", " "):gsub("\n", " ")
+    		local snippet = snippetOverride
+    		if not snippet then
+    			local lowerSource = source:lower()
+    			local startIndex = lowerSource:find(query, 1, true) or 1
+    			local snippetStart = math.max(1, startIndex - 45)
+    			snippet = source:sub(snippetStart, math.min(#source, startIndex + 95)):gsub("\r", " "):gsub("\n", " ")
+    		end
     
     		local detail = Instance.new("TextLabel")
     		detail.BackgroundTransparency = 1
@@ -15038,6 +15084,63 @@ end,
     		end)
     	end
     
+    	local function searchWithHelper(query)
+    		if not env.HelperServer or not env.HelperServer.SearchSource then return false end
+    		if env.HelperServer.IsActive and not env.HelperServer.IsActive(false) then return false end
+    
+    		local body = env.HelperServer.SearchSource(query, 120)
+    		local decoded = decodeJson(body)
+    		if not decoded or decoded.ok ~= true or type(decoded.results) ~= "table" then
+    			return false
+    		end
+    		if tonumber(decoded.indexed or 0) <= 0 then
+    			return false
+    		end
+    
+    		rebuildScriptLookup()
+    		local found = 0
+    		for _, item in ipairs(decoded.results) do
+    			local key = tostring(item.key or "")
+    			if key ~= "" then
+    				found += 1
+    				addResult(key, {
+    					Path = item.path,
+    					Name = item.name,
+    					ClassName = item.className,
+    				}, query, "", tostring(item.snippet or "helper source hit"))
+    			end
+    		end
+    		setStatus(("Helper search: %d result(s) from %d indexed script(s)."):format(found, tonumber(decoded.indexed or 0)))
+    		return true
+    	end
+    
+    	local function pushToHelperIndex(scriptInstance, key)
+    		if not key or not env.HelperServer or not env.HelperServer.IndexSource then return false end
+    		if helperIndexedKeys[key] then return false end
+    		if env.HelperServer.IsActive and not env.HelperServer.IsActive(false) then return false end
+    		if not env.DecompileCache or not env.DecompileCache.Read then return false end
+    
+    		local okSource, source = pcall(env.DecompileCache.Read, scriptInstance)
+    		if not okSource or type(source) ~= "string" then return false end
+    
+    		local okPath, path = pcall(function()
+    			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(scriptInstance) end
+    			return scriptInstance:GetFullName()
+    		end)
+    		local result = env.HelperServer.IndexSource(
+    			key,
+    			okPath and tostring(path) or scriptInstance:GetFullName(),
+    			scriptInstance.Name,
+    			scriptInstance.ClassName,
+    			source
+    		)
+    		if type(result) == "string" then
+    			helperIndexedKeys[key] = true
+    			return true
+    		end
+    		return false
+    	end
+    
     	CodeSearch.Search = function()
     		if not canUseCache() then
     			clearResults()
@@ -15049,6 +15152,10 @@ end,
     		clearResults()
     		if query == "" then
     			setStatus("Enter a keyword to search cached code.")
+    			return
+    		end
+    
+    		if searchWithHelper(query) then
     			return
     		end
     
@@ -15101,6 +15208,7 @@ end,
     			local decompiled = 0
     			local cached = 0
     			local failed = 0
+    			local helperIndexed = 0
     			local batchCount = 0
     
     			if total == 0 then
@@ -15122,6 +15230,7 @@ end,
     				local key = getScriptKey(scriptInstance)
     				if key and indexedKeys[key] and hasCachedFile(scriptInstance) then
     					cached += 1
+    					if pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
     					batchCount += 1
     					if batchCount % 100 == 0 then
     						task.wait()
@@ -15132,6 +15241,7 @@ end,
     				if hasCachedFile(scriptInstance) then
     					if key then indexedKeys[key] = true end
     					cached += 1
+    					if pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
     					batchCount += 1
     					if batchCount % 100 == 0 then
     						task.wait()
@@ -15148,6 +15258,7 @@ end,
     				if success then
     					decompiled += 1
     					if key then indexedKeys[key] = true end
+    					if key and pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
     				else
     					failed += 1
     				end
@@ -15159,9 +15270,9 @@ end,
     			rebuildScriptLookup()
     			if env.GetClientSurfaceCoverage then
     				local coverage = env.GetClientSurfaceCoverage()
-    				setStatus(("Index complete: %d cached, %d decompiled, %d failed. Surface: %d scripts, %d remotes."):format(cached, decompiled, failed, coverage.AllScripts, coverage.Remotes))
+    				setStatus(("Index complete: %d cached, %d decompiled, %d failed, %d helper. Surface: %d scripts, %d remotes."):format(cached, decompiled, failed, helperIndexed, coverage.AllScripts, coverage.Remotes))
     			else
-    				setStatus(("Index complete: %d cached, %d decompiled, %d failed."):format(cached, decompiled, failed))
+    				setStatus(("Index complete: %d cached, %d decompiled, %d failed, %d helper."):format(cached, decompiled, failed, helperIndexed))
     			end
     		end)
     	end
@@ -16407,6 +16518,18 @@ end,
     		end
     		return scriptByKey
     	end
+    	local function decodeJson(body)
+    		local httpService = service and service.HttpService
+    		if not httpService then
+    			local ok, resolved = pcall(game.GetService, game, "HttpService")
+    			if ok then httpService = resolved end
+    		end
+    		if not httpService or type(body) ~= "string" then return nil end
+    		local ok, decoded = pcall(function()
+    			return httpService:JSONDecode(body)
+    		end)
+    		return ok and decoded or nil
+    	end
     	function ClientIndex.RefreshSurface(force)
     		local now = os.clock()
     		if not force and now - surfaceStamp < surfaceTtl then return surface end
@@ -16450,6 +16573,29 @@ end,
     	function ClientIndex.SearchCached(query, keepGoing, limit)
     		local rows, lowerQuery = {}, tostring(query or ""):lower()
     		if lowerQuery == "" then return rows end
+    		if env.HelperServer and env.HelperServer.SearchSource then
+    			local active = true
+    			if env.HelperServer.IsActive then active = env.HelperServer.IsActive(false) end
+    			if active then
+    				local decoded = decodeJson(env.HelperServer.SearchSource(query, limit or 80))
+    				if decoded and decoded.ok == true and tonumber(decoded.indexed or 0) > 0 and type(decoded.results) == "table" then
+    					for _, item in ipairs(decoded.results) do
+    						if keepGoing and not keepGoing() then return rows end
+    						rows[#rows + 1] = {
+    							Key = tostring(item.key or ""),
+    							Entry = {
+    								Path = item.path,
+    								Name = item.name,
+    								ClassName = item.className,
+    							},
+    							Snippet = tostring(item.snippet or "helper source hit"),
+    						}
+    						if limit and #rows >= limit then return rows end
+    					end
+    					return rows
+    				end
+    			end
+    		end
     		local entries, cacheDir = ClientIndex.GetCacheEntries()
     		local count = 0
     		for key, entry in pairs(entries) do
@@ -18304,6 +18450,14 @@ end,
     
     		-- Forward change logs asynchronously to local helper server if active
     		local logStr = string.format("[%s] %s.%s: %s -> %s", timestamp, instPath, propName, tostring(oldVal), tostring(newVal))
+    		if env.HelperServer and env.HelperServer.Log then
+    			local spawnFunc = (task and task.spawn) or function(f) coroutine.wrap(f)() end
+    			spawnFunc(function()
+    				pcall(env.HelperServer.Log, logStr)
+    			end)
+    			return
+    		end
+    
     		local req = env.request or (syn and syn.request) or (http and http.request) or http_request or request
     		if req then
     			local spawnFunc = (task and task.spawn) or function(f) coroutine.wrap(f)() end
@@ -19458,6 +19612,7 @@ DefaultSettings = (function()
 			DecompilerFallback = "Konstant", --Konstant, Shiny, AdvancedDecompiler
 			PreferDecompilerFallback = false,
 			ShinyDecompilerPort = 3000,
+			HelperServerPort = 8080,
 		},
 		AutoCheckUpdate = true,
 		
@@ -20081,6 +20236,104 @@ Main = (function()
 			return constants
 		end
 		env.request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+
+		env.HelperServer = (function()
+			local helper = {
+				LastStatus = "unknown",
+				LastChecked = 0,
+			}
+
+			local function getBaseUrl()
+				local port = Settings.Decompiler.HelperServerPort or 8080
+				return "http://localhost:" .. tostring(port)
+			end
+
+			function helper.Request(path, method, body, contentType)
+				local req = env.request or (syn and syn.request) or (http and http.request) or http_request or request
+				if not req then return nil, "request API unavailable" end
+
+				local ok, result = pcall(req, {
+					Url = getBaseUrl() .. path,
+					Method = method or "GET",
+					Headers = {
+						["Content-Type"] = contentType or "text/plain"
+					},
+					Body = body
+				})
+				if not ok then return nil, tostring(result) end
+				return result, nil
+			end
+
+			function helper.IsActive(force)
+				if not force and os.clock() - helper.LastChecked < 5 then
+					return helper.LastStatus == "active"
+				end
+				helper.LastChecked = os.clock()
+				local result = helper.Request("/status", "GET")
+				helper.LastStatus = (result and result.StatusCode == 200) and "active" or "offline"
+				return helper.LastStatus == "active"
+			end
+
+			function helper.Deobfuscate(source)
+				local result = helper.Request("/deobfuscate", "POST", source, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.AnalyzeSource(source)
+				local result = helper.Request("/analyze-source", "POST", source, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.IndexSource(key, path, name, className, source)
+				local body = table.concat({
+					tostring(key or ""),
+					tostring(path or ""),
+					tostring(name or ""),
+					tostring(className or ""),
+					tostring(source or "")
+				}, "\n")
+				local result = helper.Request("/index-source", "POST", body, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.SearchSource(query, limit)
+				local body = tostring(limit or 80) .. "\n" .. tostring(query or "")
+				local result = helper.Request("/search-source", "POST", body, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.IndexStatus()
+				local result = helper.Request("/index-status", "GET")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.ClearSourceIndex()
+				local result = helper.Request("/index-clear", "POST", "", "text/plain")
+				return result and result.StatusCode == 200
+			end
+
+			function helper.Log(line)
+				local result = helper.Request("/log", "POST", tostring(line), "text/plain")
+				return result and result.StatusCode == 200
+			end
+
+			return helper
+		end)()
 		
 		env.isdecompile = function()
 			return typeof(decompile) == "function" or typeof(getscriptbytecode) == "function" or false
@@ -21753,7 +22006,7 @@ Main.Init()
 
 -- Rspy Plugin
 
-local plugin_src = [[
+local plugin_src = [=[
 local main_ref, lib_ref, apps_ref, settings_ref, theme_ref
 local explorer_ref, properties_ref
  
@@ -22703,7 +22956,7 @@ return {
 	Main          = main,
 	PluginData    = plugin_data,
 }
-]]
+]=]
  
 if not isfolder("dex")         then makefolder("dex")         end
 if not isfolder("dex/plugins") then makefolder("dex/plugins") end

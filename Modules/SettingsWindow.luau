@@ -356,6 +356,7 @@ local function main()
 		AddSeperator("Decompiler")
 		AddText("If executor does not support decompile, it will use the fallback option.")
 		AddText("'getbytecode' is mandatory to use fallback decompilers.")
+		AddText("Local C++ Helper handles /script, /deobfuscate and /log; it does not decompile bytecode.")
 		local decompilerOption = {"Executor (Native)", "Konstant", "AdvancedDecompiler", "Shiny"}
 		local initialSelected = "Executor (Native)"
 		if Settings.Decompiler.PreferDecompilerFallback then
@@ -384,6 +385,18 @@ local function main()
 				else
 					ShinyPort.Text = Settings.Decompiler.ShinyDecompilerPort
 				end
+			end
+		end)
+
+		local HelperPort = AddTextbox("Local Helper Port", tostring(Settings.Decompiler.HelperServerPort or 8080), 50)
+		HelperPort.FocusLost:Connect(function()
+			local portinput = tonumber(HelperPort.Text)
+			if not portinput then
+				HelperPort.Text = tostring(Settings.Decompiler.HelperServerPort or 8080)
+			elseif portinput > 0 and portinput <= 65535 then
+				Settings.Decompiler.HelperServerPort = portinput
+			else
+				HelperPort.Text = tostring(Settings.Decompiler.HelperServerPort or 8080)
 			end
 		end)
 		

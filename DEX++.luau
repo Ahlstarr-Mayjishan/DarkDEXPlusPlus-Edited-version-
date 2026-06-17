@@ -173,6 +173,7 @@ DefaultSettings = (function()
 			DecompilerFallback = "Konstant", --Konstant, Shiny, AdvancedDecompiler
 			PreferDecompilerFallback = false,
 			ShinyDecompilerPort = 3000,
+			HelperServerPort = 8080,
 		},
 		AutoCheckUpdate = true,
 		
@@ -796,6 +797,104 @@ Main = (function()
 			return constants
 		end
 		env.request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+
+		env.HelperServer = (function()
+			local helper = {
+				LastStatus = "unknown",
+				LastChecked = 0,
+			}
+
+			local function getBaseUrl()
+				local port = Settings.Decompiler.HelperServerPort or 8080
+				return "http://localhost:" .. tostring(port)
+			end
+
+			function helper.Request(path, method, body, contentType)
+				local req = env.request or (syn and syn.request) or (http and http.request) or http_request or request
+				if not req then return nil, "request API unavailable" end
+
+				local ok, result = pcall(req, {
+					Url = getBaseUrl() .. path,
+					Method = method or "GET",
+					Headers = {
+						["Content-Type"] = contentType or "text/plain"
+					},
+					Body = body
+				})
+				if not ok then return nil, tostring(result) end
+				return result, nil
+			end
+
+			function helper.IsActive(force)
+				if not force and os.clock() - helper.LastChecked < 5 then
+					return helper.LastStatus == "active"
+				end
+				helper.LastChecked = os.clock()
+				local result = helper.Request("/status", "GET")
+				helper.LastStatus = (result and result.StatusCode == 200) and "active" or "offline"
+				return helper.LastStatus == "active"
+			end
+
+			function helper.Deobfuscate(source)
+				local result = helper.Request("/deobfuscate", "POST", source, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.AnalyzeSource(source)
+				local result = helper.Request("/analyze-source", "POST", source, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.IndexSource(key, path, name, className, source)
+				local body = table.concat({
+					tostring(key or ""),
+					tostring(path or ""),
+					tostring(name or ""),
+					tostring(className or ""),
+					tostring(source or "")
+				}, "\n")
+				local result = helper.Request("/index-source", "POST", body, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.SearchSource(query, limit)
+				local body = tostring(limit or 80) .. "\n" .. tostring(query or "")
+				local result = helper.Request("/search-source", "POST", body, "text/plain")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.IndexStatus()
+				local result = helper.Request("/index-status", "GET")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
+			function helper.ClearSourceIndex()
+				local result = helper.Request("/index-clear", "POST", "", "text/plain")
+				return result and result.StatusCode == 200
+			end
+
+			function helper.Log(line)
+				local result = helper.Request("/log", "POST", tostring(line), "text/plain")
+				return result and result.StatusCode == 200
+			end
+
+			return helper
+		end)()
 		
 		env.isdecompile = function()
 			return typeof(decompile) == "function" or typeof(getscriptbytecode) == "function" or false
@@ -2468,9 +2567,9 @@ Main.Init()
 
 -- Rspy Plugin
 
-local plugin_src = [[
+local plugin_src = [=[
 -- [[REMOTESPY_PLUGIN_PLACEHOLDER]]
-]]
+]=]
  
 if not isfolder("dex")         then makefolder("dex")         end
 if not isfolder("dex/plugins") then makefolder("dex/plugins") end

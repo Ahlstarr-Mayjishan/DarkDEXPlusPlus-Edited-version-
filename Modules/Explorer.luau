@@ -1387,6 +1387,15 @@ local function main()
 				if env.isViableDecompileScript then
 					push("  Decompileable: " .. tostring(env.isViableDecompileScript(obj)))
 				end
+				if env.DecompileCache and env.DecompileCache.Read and env.HelperServer and env.HelperServer.AnalyzeSource then
+					local cacheOk, cachedSource = pcall(env.DecompileCache.Read, obj)
+					if cacheOk and type(cachedSource) == "string" then
+						local helperOk, analysis = pcall(env.HelperServer.AnalyzeSource, cachedSource)
+						if helperOk and type(analysis) == "string" and #analysis > 0 then
+							push("  Cached source analysis: " .. analysis)
+						end
+					end
+				end
 			end
 			return table.concat(lines, "\n")
 		end

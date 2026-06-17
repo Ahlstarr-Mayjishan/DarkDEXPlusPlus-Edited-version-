@@ -1,80 +1,76 @@
-# DarkDEX++ Premium & Local Helper Server
+# DarkDEX++ Local Helper
 
-Bản nâng cấp DarkDEX++ tích hợp 4 công cụ phân tích cao cấp và **C++ Local Helper Server** để tối ưu hóa hiệu năng, giảm lag tối đa khi xử lý code lớn.
+DarkDEX++ can run independently using the `DEX++_compiled.luau` file, or fetch the script via the C++ Local Helper Server at `http://localhost:8080/script`.
 
----
+## What does the Helper Server do?
 
-## 🚀 Hướng Dẫn Sử Dụng nhanh (Quick Start)
+`HelperServer/DEX_Helper.exe` currently supports:
 
-### Bước 1: Khởi động Local Helper Server
-1. Truy cập thư mục `HelperServer`.
-2. Chạy file **`DEX_Helper.exe`**. Một cửa sổ Console nhỏ sẽ xuất hiện hiển thị:
-   ```text
-   DEX++ C++ Local Helper Server listening on port 8080...
-   ```
-   *Lưu ý: Bạn phải chạy thủ công file này vì các Roblox Executor bị giới hạn sandbox bảo mật, không thể tự khởi động file chạy của Windows.*
+- `GET /status`: Checks if the server is running.
+- `GET /script`: Returns the content of `DEX++_compiled.luau` to be loaded locally via `loadstring`.
+- `POST /deobfuscate`: Post-processes decompiled source code (e.g., renaming variables).
+- `POST /analyze-source`: Quickly analyzes raw/cached source code and returns a JSON object containing the line count, function count, remote calls, risk signals, and prominent identifiers.
+- `POST /index-source`: Stores a cached source file in the helper's in-memory analysis index.
+- `POST /search-source`: Searches the helper's in-memory source index and returns ranked JSON results.
+- `GET /index-status`: Returns the current in-memory index size.
+- `POST /index-clear`: Clears the helper's in-memory source index.
+- `POST /log`: Records logs from the Property Tracker into `dex_server_logs.txt`.
 
-### Bước 2: Thực thi script trong Game
-Bạn có thể chạy script theo hai cách:
+Important: This C++ helper is **not a bytecode decompiler**. It does not possess an engine to decompile Roblox bytecode into Luau source code, so it does not directly speed up the `decompile(script)` step. The decompile speed still depends on your executor's native decompiler, the Shiny/lua.expert fallbacks, and DarkDEX++'s built-in cache.
 
-* **Cách 1 (Khuyên dùng - Dùng Loadstring):** Nếu bạn đã khởi động `DEX_Helper.exe`, bạn chỉ cần chạy một dòng code sau trong Executor của mình:
-  ```lua
-  loadstring(game:HttpGet("http://localhost:8080/script"))()
-  ```
-  *Cách này sẽ tự động tải phiên bản DarkDEX++ đã biên dịch mới nhất từ server cục bộ và chạy ngay lập tức.*
+If `POST /decompile` is requested, the helper will return `501 Not Implemented` to avoid confusion.
 
-* **Cách 2 (Sao chép trực tiếp):** 
-  1. Mở file [DEX++_compiled.luau](file:///d:/Scripting/Rework%20DarkDEX++/DEX++_compiled.luau) và sao chép toàn bộ code bên trong.
-  2. Dán vào Roblox Executor của bạn và nhấn **Execute**.
+## Quick Start
 
-Khi bạn sử dụng tính năng **Decompiler** hoặc **Property Tracker**, script sẽ tự động kết nối và giao tiếp với C++ Helper Server để xử lý mượt mà nhất.
+1. Open `HelperServer/DEX_Helper.exe`.
+2. In your executor, run:
 
-> [!TIP]
-> **Chế độ tự động Fallback (Fail-Safe):** Nếu bạn không mở `DEX_Helper.exe`, script vẫn chạy bình thường! DarkDEX++ sẽ tự động chuyển sang chế độ xử lý bằng Luau nguyên bản mà không bị lỗi hay crash.
+```lua
+loadstring(game:HttpGet("http://localhost:8080/script"))()
+```
 
----
+If your executor does not allow `game:HttpGet` requests to localhost, copy the contents of `DEX++_compiled.luau` directly into the executor.
 
-## 🛠️ Biên dịch lại Helper Server (Dành cho Lập trình viên)
+## Rebuilding
 
-Nếu bạn thay đổi code C++ trong [HelperServer/main.cpp](file:///d:/Scripting/Rework%20DarkDEX++/HelperServer/main.cpp) và muốn biên dịch lại:
-1. Chạy file [HelperServer/compile.bat](file:///d:/Scripting/Rework%20DarkDEX++/HelperServer/compile.bat).
-2. Script sẽ sử dụng trình biên dịch `g++` để tạo lại file `DEX_Helper.exe` tối ưu hóa cao (`-O3`).
+Build the Luau bundle:
 
-Nếu bạn thay đổi các file Module Luau trong thư mục `Modules/`:
-1. Chạy command: `python build.py` để đóng gói lại toàn bộ code thành file [DEX++_compiled.luau](file:///d:/Scripting/Rework%20DarkDEX++/DEX++_compiled.luau).
+```powershell
+python .\build.py
+```
 
----
+Build the Helper C++ executable:
 
-## 💎 Tổng quan 4 tính năng Premium mới tích hợp
+```powershell
+cd .\HelperServer
+.\compile.bat
+```
 
-### 1. Auto Exploit / Remote Fuzzer Generator
-* **Cách dùng:** Click chuột phải vào bất kỳ `RemoteEvent`, `RemoteFunction` nào trong Explorer -> Chọn **Generate Fuzzer Script**.
-* **Chức năng:** Tự động tạo một template script exploit mẫu để fuzzing remote đó với các giá trị biên (NaN, Infinity, nested tables, v.v.). Code mẫu sẽ tự động hiển thị trong cửa sổ Script Viewer.
+If `DEX_Helper.exe` is currently running, close the helper console window before compiling, as Windows may lock the executable file.
 
-### 2. Property Tracker / Instance Watcher
-* **Cách dùng:** Nhấp chuột phải vào Instance -> Chọn **Track Properties** hoặc mở từ bảng điều khiển chính.
-* **Chức năng:** Theo dõi các thay đổi thuộc tính thời gian thực. Hỗ trợ lọc tìm kiếm và xuất log. Các log này đồng thời được gửi về C++ Server để lưu trữ vào file `dex_server_logs.txt` trên máy tính của bạn.
+## What should I do to decompile faster?
 
-### 3. Luau Code Generator / Instance Serializer
-* **Cách dùng:** Click chuột phải vào bất kỳ cụm Instance nào -> Chọn **Serialize to Luau**.
-* **Chức năng:** Chuyển đổi toàn bộ cây Object và các thuộc tính tương thích thành code Luau thuần túy để tái tạo lại cấu trúc đó (hữu ích khi build lại map/UI).
+The most effective approach currently is using the following pipeline:
 
-### 4. Active Thread & Script Manager
-* **Cách dùng:** Mở ứng dụng từ màn hình grid chính của DarkDEX++.
-* **Chức năng:**
-  * **Tab Scripts:** Quản lý bật/tắt (Enable/Disable) hoặc decompile các Script đang hoạt động.
-  * **Tab Coroutines:** Quét bộ nhớ Luau Registry để liệt kê các luồng (thread) đang chạy/tạm dừng, cho phép theo dõi stack debug và tắt (`task.cancel`) các luồng bị treo để giải phóng tài nguyên.
+- Enable caching under `Code Search > Index Scripts`.
+- Only decompile scripts that have not been cached yet.
+- Use `ClientIndex` so that tools avoid scanning the instance tree repeatedly.
+- Prioritize decompiling the script that is currently open/clicked first.
+- Deobfuscate, run `analyze-source`, and push cached source into the helper index after the source code is retrieved.
 
----
+## Local Analysis Engine
 
-## 📂 Cấu trúc thư mục dự án
+When `DEX_Helper.exe` is running, `Code Search > Index Scripts` now delegates extra work to the helper:
 
-* `DEX++.luau`: File loader chính.
-* `DEX++_compiled.luau`: Bản build hoàn chỉnh sau khi đóng gói toàn bộ module (Dùng bản này để chạy).
-* `build.py`: Script Python để đóng gói các module trong `Modules/` và `Plugins/` vào file đích.
-* `Modules/`: Thư mục chứa code logic của từng tính năng độc lập.
-* `HelperServer/`:
-  * `main.cpp`: Code máy chủ C++ tối ưu hóa deobfuscate và ghi log.
-  * `compile.bat`: File batch hỗ trợ tự động biên dịch code C++.
-  * `DEX_Helper.exe`: File chạy Windows của server helper.
-  * `dex_server_logs.txt`: File chứa log thuộc tính được lưu trữ.
+- decompiled/cached source is sent to `/index-source`;
+- the helper keeps a fast in-memory index for the current helper session;
+- `Code Search` and shared `ClientIndex.SearchCached` prefer `/search-source`;
+- if the helper is offline or the helper index is empty, DarkDEX++ falls back to the old Luau cache scan.
+
+This is intentionally session-local RAM state. It avoids background scanning and avoids keeping another database process alive. Restarting the helper clears the helper-side index; running `Index Scripts` rebuilds it.
+
+## Copy to AI + helper analysis
+
+In the Explorer, the `Copy to AI` option will automatically copy the object summary to your clipboard. If the object is a script that is already in the decompile cache and the local helper is running, the prompt will include the `Cached source analysis` so that the AI can understand it faster without reading the entire source code.
+
+To make the C++ helper truly speed up decompilation, it requires a real decompiler backend that accepts bytecode and returns Luau source code. The helper does not currently feature this component.

@@ -60,6 +60,18 @@ local function main()
 		end
 		return scriptByKey
 	end
+	local function decodeJson(body)
+		local httpService = service and service.HttpService
+		if not httpService then
+			local ok, resolved = pcall(game.GetService, game, "HttpService")
+			if ok then httpService = resolved end
+		end
+		if not httpService or type(body) ~= "string" then return nil end
+		local ok, decoded = pcall(function()
+			return httpService:JSONDecode(body)
+		end)
+		return ok and decoded or nil
+	end
 	function ClientIndex.RefreshSurface(force)
 		local now = os.clock()
 		if not force and now - surfaceStamp < surfaceTtl then return surface end
@@ -103,6 +115,29 @@ local function main()
 	function ClientIndex.SearchCached(query, keepGoing, limit)
 		local rows, lowerQuery = {}, tostring(query or ""):lower()
 		if lowerQuery == "" then return rows end
+		if env.HelperServer and env.HelperServer.SearchSource then
+			local active = true
+			if env.HelperServer.IsActive then active = env.HelperServer.IsActive(false) end
+			if active then
+				local decoded = decodeJson(env.HelperServer.SearchSource(query, limit or 80))
+				if decoded and decoded.ok == true and tonumber(decoded.indexed or 0) > 0 and type(decoded.results) == "table" then
+					for _, item in ipairs(decoded.results) do
+						if keepGoing and not keepGoing() then return rows end
+						rows[#rows + 1] = {
+							Key = tostring(item.key or ""),
+							Entry = {
+								Path = item.path,
+								Name = item.name,
+								ClassName = item.className,
+							},
+							Snippet = tostring(item.snippet or "helper source hit"),
+						}
+						if limit and #rows >= limit then return rows end
+					end
+					return rows
+				end
+			end
+		end
 		local entries, cacheDir = ClientIndex.GetCacheEntries()
 		local count = 0
 		for key, entry in pairs(entries) do

@@ -86,6 +86,14 @@ local function main()
 
 		-- Forward change logs asynchronously to local helper server if active
 		local logStr = string.format("[%s] %s.%s: %s -> %s", timestamp, instPath, propName, tostring(oldVal), tostring(newVal))
+		if env.HelperServer and env.HelperServer.Log then
+			local spawnFunc = (task and task.spawn) or function(f) coroutine.wrap(f)() end
+			spawnFunc(function()
+				pcall(env.HelperServer.Log, logStr)
+			end)
+			return
+		end
+
 		local req = env.request or (syn and syn.request) or (http and http.request) or http_request or request
 		if req then
 			local spawnFunc = (task and task.spawn) or function(f) coroutine.wrap(f)() end

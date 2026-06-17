@@ -98,6 +98,13 @@ local function main()
 
 	-- 3. Variable Normalizer: Maps obfuscated variables to var_1, var_2, etc.
 	function SmartDecompiler.NormalizeVariables(source)
+		if env.HelperServer and env.HelperServer.Deobfuscate then
+			local helperResult = env.HelperServer.Deobfuscate(source)
+			if helperResult then
+				return helperResult
+			end
+		end
+
 		local req = env.request or (syn and syn.request) or (http and http.request) or http_request or request
 		if req then
 			local success, result = pcall(function()
