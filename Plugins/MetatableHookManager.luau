@@ -75,20 +75,22 @@ local function main()
 		__index = {
 			name = "__index",
 			enabled = false,
+			blocked = true,
 			installed = false,
 			count = 0,
 			last = "never",
 			color = Color3.fromRGB(34, 197, 94),
-			error = "",
+			error = "blocked: crash risk",
 		},
 		__newindex = {
 			name = "__newindex",
 			enabled = false,
+			blocked = true,
 			installed = false,
 			count = 0,
 			last = "never",
 			color = Color3.fromRGB(249, 115, 22),
-			error = "",
+			error = "blocked: crash risk",
 		},
 	}
 	local hook_order = { "__namecall", "__index", "__newindex" }
@@ -109,6 +111,7 @@ local function main()
 	local log_limit = 320
 	local visible_log_limit = 90
 	local high_volume_hook_active = false
+	local unsafe_metatable_hooks_allowed = false
 
 	local window, list_frame, scroll_v, status_label, empty_label, inspector_scroll, hook_panel, capability_label
 	local rebuild_list, render_hooks, show_details
@@ -292,6 +295,13 @@ local function main()
 	end
 
 	local function enforce_safe_hook_set(changed_hook)
+		if (changed_hook == "__index" or changed_hook == "__newindex") and not unsafe_metatable_hooks_allowed then
+			hooks[changed_hook].enabled = false
+			hooks[changed_hook].error = "blocked: crash risk"
+			high_volume_hook_active = false
+			max_logs_per_second = 140
+			return
+		end
 		if changed_hook == "__index" and hooks.__index.enabled then
 			hooks.__namecall.enabled = false
 			hooks.__newindex.enabled = false
@@ -403,6 +413,11 @@ local function main()
 
 	local function install_index_hook()
 		local hook = hooks.__index
+		if not unsafe_metatable_hooks_allowed then
+			hook.enabled = false
+			hook.error = "blocked: crash risk"
+			return
+		end
 		if hook.installed then
 			return
 		end
@@ -442,6 +457,11 @@ local function main()
 
 	local function install_newindex_hook()
 		local hook = hooks.__newindex
+		if not unsafe_metatable_hooks_allowed then
+			hook.enabled = false
+			hook.error = "blocked: crash risk"
+			return
+		end
 		if hook.installed then
 			return
 		end
@@ -480,16 +500,17 @@ local function main()
 	end
 
 	local function install_hooks()
-		if hooks.__index.enabled then
-			enforce_safe_hook_set("__index")
-		end
+		hooks.__index.enabled = false
+		hooks.__newindex.enabled = false
+		hooks.__index.error = "blocked: crash risk"
+		hooks.__newindex.error = "blocked: crash risk"
 		if hooks.__namecall.enabled then
 			install_namecall_hook()
 		end
-		if hooks.__index.enabled then
+		if unsafe_metatable_hooks_allowed and hooks.__index.enabled then
 			install_index_hook()
 		end
-		if hooks.__newindex.enabled then
+		if unsafe_metatable_hooks_allowed and hooks.__newindex.enabled then
 			install_newindex_hook()
 		end
 	end
@@ -790,7 +811,7 @@ local function main()
 			name_lbl.Size = UDim2.new(1, -20, 0, 18)
 			name_lbl.Font = get_theme() and get_theme().MapFont(Enum.Font.SourceSansBold) or Enum.Font.SourceSansBold
 			name_lbl.TextSize = 14
-			name_lbl.TextColor3 = hook.enabled and settings_ref.Theme.Text or settings_ref.Theme.PlaceholderText
+			name_lbl.TextColor3 = hook.blocked and settings_ref.Theme.Important or (hook.enabled and settings_ref.Theme.Text or settings_ref.Theme.PlaceholderText)
 			name_lbl.TextXAlignment = Enum.TextXAlignment.Left
 			name_lbl.Text = hook.name
 
@@ -800,7 +821,7 @@ local function main()
 			state_lbl.Size = UDim2.new(1, -20, 0, 15)
 			state_lbl.Font = Enum.Font.Code
 			state_lbl.TextSize = 11
-			state_lbl.TextColor3 = hook.installed and hook.color or settings_ref.Theme.PlaceholderText
+			state_lbl.TextColor3 = hook.blocked and settings_ref.Theme.Important or (hook.installed and hook.color or settings_ref.Theme.PlaceholderText)
 			state_lbl.TextXAlignment = Enum.TextXAlignment.Left
 			local state_text = hook.installed and "installed" or "not installed"
 			if hook.error ~= "" then
@@ -819,6 +840,13 @@ local function main()
 			count_lbl.Text = tostring(hook.count) .. " events | last " .. hook.last
 
 			row.MouseButton1Click:Connect(function()
+				if hook.blocked and not unsafe_metatable_hooks_allowed then
+					hook.enabled = false
+					hook.error = "blocked: crash risk"
+					render_hooks()
+					update_status()
+					return
+				end
 				hook.enabled = not hook.enabled
 				enforce_safe_hook_set(hook.name)
 				if active and hook.enabled then
@@ -991,7 +1019,7 @@ local function main()
 		left_note.TextWrapped = true
 		left_note.TextXAlignment = Enum.TextXAlignment.Left
 		left_note.TextYAlignment = Enum.TextYAlignment.Top
-		left_note.Text = "__index is high-volume and runs in solo safe mode. Enabling it disables __namecall and __newindex to avoid client crashes. Stop disables capture, but installed metamethod chains stay passive."
+		left_note.Text = "Crash guard: only __namecall capture is enabled. __index and __newindex are blocked because they sit on hot engine paths and can crash Roblox clients. Restart Roblox after any old unsafe hook session."
 
 		local split_left = Instance.new("Frame", body)
 		split_left.BackgroundColor3 = settings_ref.Theme.Outline1

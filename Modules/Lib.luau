@@ -2241,11 +2241,11 @@ local function main()
 			end)
 
 			newFrame.MouseWheelForward:Connect(function()
-				self:ScrollTo(self.Index - self.WheelIncrement)
+				self:ScrollTo((self.ScrollTarget or self.Index) - self.WheelIncrement)
 			end)
 
 			newFrame.MouseWheelBackward:Connect(function()
-				self:ScrollTo(self.Index + self.WheelIncrement)
+				self:ScrollTo((self.ScrollTarget or self.Index) + self.WheelIncrement)
 			end)
 
 			self.GuiElems.ScrollThumb = scrollThumb
@@ -2331,6 +2331,7 @@ local function main()
 			local maxIndex = math.max(0, self.TotalSpace - self.VisibleSpace)
 			local target = math.clamp(ind, 0, maxIndex)
 			if nocallback or self.Dragging or self.SmoothScrolling == false then
+				self.ScrollTarget = target
 				self.Index = target
 				self:Update()
 				if not nocallback then
@@ -2432,8 +2433,8 @@ local function main()
 		funcs.SetScrollFrame = function(self,frame)
 			if self.ScrollUpEvent then self.ScrollUpEvent:Disconnect() self.ScrollUpEvent = nil end
 			if self.ScrollDownEvent then self.ScrollDownEvent:Disconnect() self.ScrollDownEvent = nil end
-			self.ScrollUpEvent = frame.MouseWheelForward:Connect(function() self:ScrollTo(self.Index - self.WheelIncrement) end)
-			self.ScrollDownEvent = frame.MouseWheelBackward:Connect(function() self:ScrollTo(self.Index + self.WheelIncrement) end)
+			self.ScrollUpEvent = frame.MouseWheelForward:Connect(function() self:ScrollTo((self.ScrollTarget or self.Index) - self.WheelIncrement) end)
+			self.ScrollDownEvent = frame.MouseWheelBackward:Connect(function() self:ScrollTo((self.ScrollTarget or self.Index) + self.WheelIncrement) end)
 		end
 
 		local mt = {}

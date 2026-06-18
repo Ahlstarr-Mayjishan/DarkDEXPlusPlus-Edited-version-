@@ -2667,6 +2667,7 @@ Main = (function()
 	Main.SmoothScrollingFrame = function(frame, step)
 		local targetY = 0
 		local tween
+		local suppressCanvasSync = false
 		local disabledNativeScroll = pcall(function()
 			frame.ScrollingEnabled = false
 		end)
@@ -2681,6 +2682,7 @@ Main = (function()
 		end
 
 		frame:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+			if suppressCanvasSync then return end
 			local currentY = frame.CanvasPosition.Y
 			if math.abs(currentY - targetY) > 2 and (not tween or tween.PlaybackState ~= Enum.PlaybackState.Playing) then
 				targetY = currentY
@@ -2690,14 +2692,18 @@ Main = (function()
 
 		frame.InputChanged:Connect(function(input)
 			if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
-			targetY = frame.CanvasPosition.Y
+			if not tween or tween.PlaybackState ~= Enum.PlaybackState.Playing then
+				targetY = frame.CanvasPosition.Y
+			end
 			local direction = input.Position.Z > 0 and -1 or 1
 			targetY = targetY + direction * (step or 96)
 			clampTarget()
+			suppressCanvasSync = true
 			if tween then tween:Cancel() end
 			tween = service.TweenService:Create(frame, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 				CanvasPosition = Vector2.new(frame.CanvasPosition.X, targetY)
 			})
+			suppressCanvasSync = false
 			tween:Play()
 		end)
 	end
