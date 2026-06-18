@@ -299,6 +299,10 @@ local function main()
 	RuntimeInspector.StartRemoteLogger, RuntimeInspector.StopRemoteLogger = startRemoteLogger, stopRemoteLogger
 	RuntimeInspector.StartRakNet, RuntimeInspector.StopRakNet = startRakNet, stopRakNet
 	RuntimeInspector.Clear, RuntimeInspector.GetBuffers = clearData, function() return buffers end
+	RuntimeInspector.Uninit = function()
+		stopRemoteLogger()
+		stopRakNet()
+	end
 	return RuntimeInspector
 end
 if gethsfuncs then

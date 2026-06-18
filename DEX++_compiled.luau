@@ -2191,24 +2191,30 @@ end,
     		if descendantRemovingCon then descendantRemovingCon:Disconnect() end
     		if itemChangedCon then itemChangedCon:Disconnect() end
     
-    		descendantAddedCon = game.DescendantAdded:Connect(safeCallback(addObject))
-    		descendantRemovingCon = game.DescendantRemoving:Connect(safeCallback(removeObject))
+    		descendantAddedCon = Main.RegisterConnection(game.DescendantAdded:Connect(safeCallback(addObject)))
+    		descendantRemovingCon = Main.RegisterConnection(game.DescendantRemoving:Connect(safeCallback(removeObject)))
     
     		if Settings.Explorer.UseNameWidth then
-    			itemChangedCon = game.ItemChanged:Connect(safeCallback(function(obj,prop)
+    			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
     				if prop == "Parent" and nodes[obj] then
     					moveObject(obj)
     				elseif prop == "Name" and nodes[obj] then
     					nodes[obj].NameWidth = nil
     				end
-    			end))
+    			end)))
     		else
-    			itemChangedCon = game.ItemChanged:Connect(safeCallback(function(obj,prop)
+    			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
     				if prop == "Parent" and nodes[obj] then
     					moveObject(obj)
     				end
-    			end))
+    			end)))
     		end
+    	end
+    
+    	Explorer.Uninit = function()
+    		if descendantAddedCon then descendantAddedCon:Disconnect() descendantAddedCon = nil end
+    		if descendantRemovingCon then descendantRemovingCon:Disconnect() descendantRemovingCon = nil end
+    		if itemChangedCon then itemChangedCon:Disconnect() itemChangedCon = nil end
     	end
     
     	Explorer.ViewNode = function(node)
@@ -18041,8 +18047,8 @@ end,
     	local function start()
     		if running then return end
     		running = true
-    		cons[#cons + 1] = game.DescendantAdded:Connect(function(obj) push("added", obj) end)
-    		cons[#cons + 1] = game.DescendantRemoving:Connect(function(obj) push("removed", obj) end)
+    		cons[#cons + 1] = Main.RegisterConnection(game.DescendantAdded:Connect(function(obj) push("added", obj) end))
+    		cons[#cons + 1] = Main.RegisterConnection(game.DescendantRemoving:Connect(function(obj) push("removed", obj) end))
     		render()
     	end
     	local function stop()
@@ -18076,6 +18082,9 @@ end,
     		render()
     	end
     	ActivityMap.Start, ActivityMap.Stop = start, stop
+    	ActivityMap.Uninit = function()
+    		stop()
+    	end
     	return ActivityMap
     end
     
@@ -18737,6 +18746,10 @@ end,
     	RuntimeInspector.StartRemoteLogger, RuntimeInspector.StopRemoteLogger = startRemoteLogger, stopRemoteLogger
     	RuntimeInspector.StartRakNet, RuntimeInspector.StopRakNet = startRakNet, stopRakNet
     	RuntimeInspector.Clear, RuntimeInspector.GetBuffers = clearData, function() return buffers end
+    	RuntimeInspector.Uninit = function()
+    		stopRemoteLogger()
+    		stopRakNet()
+    	end
     	return RuntimeInspector
     end
     if gethsfuncs then
@@ -22266,6 +22279,254 @@ end
 Main = (function()
 	local Main = {}
 
+	-- Hook & Connection Registry for clean script restarts
+	Main.HookRegistry = {
+		Metatable = {},
+		Functions = {},
+		Connections = {}
+	}
+
+	local raw_hookmetamethod = getgenv().hookmetamethod
+	local raw_hookfunction = getgenv().hookfunction
+
+	local table_clear = table.clear or function(t)
+		for k in pairs(t) do
+			t[k] = nil
+		end
+	end
+
+	local function rebuildMetatableChain(metamethod)
+		local reg = Main.HookRegistry.Metatable[metamethod]
+		if not reg then return end
+
+		if #reg.hooks > 0 then
+			reg.active_hook = reg.hooks[#reg.hooks].hook_fn
+		else
+			reg.active_hook = reg.original
+		end
+	end
+
+	Main.HookMetamethod = function(target, metamethod, key, hook_fn)
+		local reg = Main.HookRegistry.Metatable[metamethod]
+		if not reg then
+			local original
+			local master_hook = function(...)
+				local r = Main.HookRegistry.Metatable[metamethod]
+				if r and r.active_hook then
+					return r.active_hook(...)
+				end
+				return original(...)
+			end
+
+			if not raw_hookmetamethod then
+				warn("Failed to hook metamethod: hookmetamethod is nil")
+				return nil
+			end
+
+			local ok, result = pcall(raw_hookmetamethod, target, metamethod, master_hook)
+			if ok and result then
+				original = result
+				reg = {
+					original = original,
+					hooks = {},
+					active_hook = original
+				}
+				Main.HookRegistry.Metatable[metamethod] = reg
+			else
+				warn("Failed to hook metamethod " .. tostring(metamethod) .. ": " .. tostring(result))
+				return nil
+			end
+		end
+
+		local found = false
+		for _, hookData in ipairs(reg.hooks) do
+			if hookData.key == key then
+				hookData.hook_fn = hook_fn
+				found = true
+				break
+			end
+		end
+		if not found then
+			table.insert(reg.hooks, { key = key, hook_fn = hook_fn })
+		end
+
+		rebuildMetatableChain(metamethod)
+
+		-- Create a proxy that executes the next hook down the chain (or original)
+		local proxy = function(...)
+			local r = Main.HookRegistry.Metatable[metamethod]
+			if not r then return reg.original(...) end
+			local idx
+			for i, h in ipairs(r.hooks) do
+				if h.key == key then
+					idx = i
+					break
+				end
+			end
+			if idx and idx > 1 then
+				return r.hooks[idx - 1].hook_fn(...)
+			else
+				return r.original(...)
+			end
+		end
+
+		return proxy
+	end
+
+	Main.UnhookMetamethod = function(metamethod, key)
+		local reg = Main.HookRegistry.Metatable[metamethod]
+		if not reg then return end
+
+		for i = #reg.hooks, 1, -1 do
+			if reg.hooks[i].key == key then
+				table.remove(reg.hooks, i)
+			end
+		end
+
+		rebuildMetatableChain(metamethod)
+	end
+
+	local function rebuildFunctionChain(target)
+		local reg = Main.HookRegistry.Functions[target]
+		if not reg then return end
+
+		if #reg.hooks > 0 then
+			reg.active_hook = reg.hooks[#reg.hooks].hook_fn
+		else
+			reg.active_hook = reg.original
+		end
+	end
+
+	Main.HookFunction = function(target, key, hook_fn)
+		if not target then return nil end
+		local reg = Main.HookRegistry.Functions[target]
+		if not reg then
+			local original
+			local master_hook = function(...)
+				local r = Main.HookRegistry.Functions[target]
+				if r and r.active_hook then
+					return r.active_hook(...)
+				end
+				return original(...)
+			end
+
+			if not raw_hookfunction then
+				warn("Failed to hook function: hookfunction is nil")
+				return nil
+			end
+
+			local ok, result = pcall(raw_hookfunction, target, master_hook)
+			if ok and result then
+				original = result
+				reg = {
+					original = original,
+					hooks = {},
+					active_hook = original
+				}
+				Main.HookRegistry.Functions[target] = reg
+			else
+				warn("Failed to hook function: " .. tostring(result))
+				return nil
+			end
+		end
+
+		local found = false
+		for _, hookData in ipairs(reg.hooks) do
+			if hookData.key == key then
+				hookData.hook_fn = hook_fn
+				found = true
+				break
+			end
+		end
+		if not found then
+			table.insert(reg.hooks, { key = key, hook_fn = hook_fn })
+		end
+
+		rebuildFunctionChain(target)
+
+		-- Create a proxy that executes the next hook down the chain (or original)
+		local proxy = function(...)
+			local r = Main.HookRegistry.Functions[target]
+			if not r then return reg.original(...) end
+			local idx
+			for i, h in ipairs(r.hooks) do
+				if h.key == key then
+					idx = i
+					break
+				end
+			end
+			if idx and idx > 1 then
+				return r.hooks[idx - 1].hook_fn(...)
+			else
+				return r.original(...)
+			end
+		end
+
+		return proxy
+	end
+
+	Main.UnhookFunction = function(target, key)
+		local reg = Main.HookRegistry.Functions[target]
+		if not reg then return end
+
+		for i = #reg.hooks, 1, -1 do
+			if reg.hooks[i].key == key then
+				table.remove(reg.hooks, i)
+			end
+		end
+
+		rebuildFunctionChain(target)
+	end
+
+	Main.RegisterConnection = function(conn)
+		if conn then
+			table.insert(Main.HookRegistry.Connections, conn)
+		end
+		return conn
+	end
+
+	Main.CleanHooksAndConnections = function()
+		for _, conn in ipairs(Main.HookRegistry.Connections) do
+			pcall(function() conn:Disconnect() end)
+		end
+		table_clear(Main.HookRegistry.Connections)
+
+		for metamethod, reg in pairs(Main.HookRegistry.Metatable) do
+			table_clear(reg.hooks)
+			rebuildMetatableChain(metamethod)
+		end
+
+		for target, reg in pairs(Main.HookRegistry.Functions) do
+			table_clear(reg.hooks)
+			rebuildFunctionChain(target)
+			if raw_hookfunction then
+				pcall(raw_hookfunction, target, reg.original)
+			end
+		end
+	end
+
+	-- Overwrite globals in getgenv() so loaded modules and plugins route through registry
+	if raw_hookmetamethod then
+		getgenv().hookmetamethod = function(target, metamethod, hook_fn)
+			return Main.HookMetamethod(target, metamethod, tostring(hook_fn), hook_fn)
+		end
+	end
+
+	if raw_hookfunction then
+		getgenv().hookfunction = function(target, hook_fn)
+			return Main.HookFunction(target, tostring(hook_fn), hook_fn)
+		end
+	end
+
+	Main.RestoreGlobals = function()
+		if raw_hookmetamethod then
+			getgenv().hookmetamethod = raw_hookmetamethod
+		end
+		if raw_hookfunction then
+			getgenv().hookfunction = raw_hookfunction
+		end
+	end
+
 	Main.ModuleList = {"Theme","SmartDecompiler","Explorer","Properties","ScriptViewer","Console","SaveInstance","ModelViewer","SettingsWindow","CodeSearch","ScriptRelations","RemoteUsageMap","ObjectLinks","ImageViewer","ClientIndex","ActivityMap","DependencyGraph","SmartSearch","RuntimeInspector","ClientIntelligence","InspectorHub","TaskRouter","ControlCenter","SecurityAuditor","RemoteFuzzer","PropertyTracker","InstanceSerializer","ThreadManager"}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
@@ -22801,59 +23062,27 @@ Main = (function()
 			Remotes = {},
 		}
 
-		local function maybeYieldScan(i)
-			if i % 450 == 0 then
-				task.wait()
-			end
-		end
-
-		local function addDescendantsToSurface(allInstances, seen)
-			local ok, descendants = pcall(game.GetDescendants, game)
-			if not ok or type(descendants) ~= "table" then return end
-			for i, obj in ipairs(descendants) do
-				addUniqueInstance(allInstances, seen, obj)
-				maybeYieldScan(i)
-			end
-		end
-
-		local function addNilToSurface(allInstances, seen)
-			if not env.getnilinstances then return end
-			local success, nilInstances = pcall(env.getnilinstances)
-			if not success or type(nilInstances) ~= "table" then return end
-			for i, obj in pairs(nilInstances) do
-				addUniqueInstance(allInstances, seen, obj)
-				if type(i) == "number" then maybeYieldScan(i) end
-			end
-		end
-
-		local function addLoadedModulesToSurface(allInstances, seen)
-			if not env.getloadedmodules then return end
-			local success, loadedModules = pcall(env.getloadedmodules)
-			if not success or type(loadedModules) ~= "table" then return end
-			for i, obj in pairs(loadedModules) do
-				if typeof(obj) == "Instance" and obj:IsA("ModuleScript") then
-					addUniqueInstance(allInstances, seen, obj)
-				end
-				if type(i) == "number" then maybeYieldScan(i) end
-			end
-		end
-
 		local function addGcScriptRefs(list, seen, allowNonViable)
 			if not env.getgc then return end
 			local success, gcObjects = pcall(env.getgc)
 			if not success or type(gcObjects) ~= "table" then return end
 
-			for i, value in pairs(gcObjects) do
+			local count = 0
+			for _, value in pairs(gcObjects) do
 				if typeof(value) == "function" then
 					local envSuccess, fnEnv = pcall(getfenv, value)
 					local scr = envSuccess and type(fnEnv) == "table" and rawget(fnEnv, "script")
 					if typeof(scr) == "Instance" and scr:IsA("LuaSourceContainer") then
 						if allowNonViable or env.isViableDecompileScript(scr) then
-							addUniqueInstance(list, seen, scr)
+							if typeof(scr) == "Instance" and not seen[scr] then
+								seen[scr] = true
+								table.insert(list, scr)
+							end
 						end
 					end
 				end
-				if type(i) == "number" then maybeYieldScan(i) end
+				count = count + 1
+				if count % 350 == 0 then task.wait() end
 			end
 		end
 
@@ -22865,29 +23094,75 @@ Main = (function()
 
 			clientSurfaceStamp = now
 			local allInstances, seen = {}, {}
-			addDescendantsToSurface(allInstances, seen)
-			addNilToSurface(allInstances, seen)
-			addLoadedModulesToSurface(allInstances, seen)
-
 			local allScripts, viableScripts, remotes = {}, {}, {}
 			local scriptSeen, viableSeen, remoteSeen = {}, {}, {}
-			for i, obj in ipairs(allInstances) do
-				if typeof(obj) == "Instance" then
+
+			local count = 0
+			local function processInstance(obj)
+				if typeof(obj) ~= "Instance" then return end
+				if not seen[obj] then
+					seen[obj] = true
+					table.insert(allInstances, obj)
 					if obj:IsA("LuaSourceContainer") then
-						addUniqueInstance(allScripts, scriptSeen, obj)
-						if env.isViableDecompileScript(obj) then
-							addUniqueInstance(viableScripts, viableSeen, obj)
+						if not scriptSeen[obj] then
+							scriptSeen[obj] = true
+							table.insert(allScripts, obj)
+							if env.isViableDecompileScript(obj) then
+								viableSeen[obj] = true
+								table.insert(viableScripts, obj)
+							end
 						end
 					elseif remoteClassMap[obj.ClassName] then
-						addUniqueInstance(remotes, remoteSeen, obj)
+						if not remoteSeen[obj] then
+							remoteSeen[obj] = true
+							table.insert(remotes, obj)
+						end
 					end
 				end
-				maybeYieldScan(i)
+				count = count + 1
+				if count % 400 == 0 then
+					task.wait()
+				end
 			end
 
+			-- 1. Descendants
+			local ok, descendants = pcall(game.GetDescendants, game)
+			if ok and type(descendants) == "table" then
+				for _, obj in ipairs(descendants) do
+					processInstance(obj)
+				end
+			end
+
+			-- 2. Nil Instances
+			if env.getnilinstances then
+				local success, nilInstances = pcall(env.getnilinstances)
+				if success and type(nilInstances) == "table" then
+					for _, obj in pairs(nilInstances) do
+						processInstance(obj)
+					end
+				end
+			end
+
+			-- 3. Loaded Modules
+			if env.getloadedmodules then
+				local success, loadedModules = pcall(env.getloadedmodules)
+				if success and type(loadedModules) == "table" then
+					for _, obj in pairs(loadedModules) do
+						processInstance(obj)
+					end
+				end
+			end
+
+			-- 4. GC scripts (optional)
 			if includeGcScripts == true then
 				addGcScriptRefs(allScripts, scriptSeen, true)
-				addGcScriptRefs(viableScripts, viableSeen, false)
+				-- Also update viableScripts from the newly added ones
+				for _, scr in ipairs(allScripts) do
+					if env.isViableDecompileScript(scr) and not viableSeen[scr] then
+						viableSeen[scr] = true
+						table.insert(viableScripts, scr)
+					end
+				end
 			end
 
 			clientSurface = {
@@ -23192,9 +23467,36 @@ Main = (function()
 		local nativeDecompile = decompile or (getgenv and getgenv().decompile)
 
 		local function hashString(data)
+			if type(data) ~= "string" then return "" end
+			
+			-- Try to use native crypt library if available
+			local crypt = getgenv().crypt or (getgenv().syn and getgenv().syn.crypt)
+			if crypt and type(crypt.hash) == "function" then
+				local success, result = pcall(crypt.hash, data, "sha1")
+				if success and result then
+					return result
+				end
+			end
+
+			-- Fast sample-based hashing in Luau to prevent lag/freezes on large strings
 			local hash = 2166136261
-			for i = 1, #data do
-				hash = (hash * 131 + data:byte(i)) % 4294967296
+			local len = #data
+			if len > 2000 then
+				for i = 1, 500 do
+					hash = (hash * 131 + data:byte(i)) % 4294967296
+				end
+				local mid = math.floor(len / 2)
+				for i = mid - 250, mid + 250 do
+					hash = (hash * 131 + data:byte(i)) % 4294967296
+				end
+				for i = len - 500, len do
+					hash = (hash * 131 + data:byte(i)) % 4294967296
+				end
+				hash = (hash * 131 + len) % 4294967296
+			else
+				for i = 1, len do
+					hash = (hash * 131 + data:byte(i)) % 4294967296
+				end
 			end
 			return ("%08x"):format(hash)
 		end
@@ -24982,6 +25284,29 @@ Main = (function()
 	end
 
 	Main.Uninit = function()
+		-- Call Uninit/CleanUp on all active module and plugin instances
+		if Apps then
+			for name, app in pairs(Apps) do
+				if type(app) == "table" then
+					if type(app.Uninit) == "function" then
+						pcall(app.Uninit)
+					elseif type(app.CleanUp) == "function" then
+						pcall(app.CleanUp)
+					end
+				end
+			end
+		end
+
+		-- Disconnect connections and clear hook chains
+		if Main.CleanHooksAndConnections then
+			pcall(Main.CleanHooksAndConnections)
+		end
+
+		-- Restore getgenv globals to original functions
+		if Main.RestoreGlobals then
+			pcall(Main.RestoreGlobals)
+		end
+
 		if Main.MainGuiMouseEvent then
 			pcall(function() Main.MainGuiMouseEvent:Disconnect() end)
 			Main.MainGuiMouseEvent = nil
@@ -25895,6 +26220,9 @@ local function main()
 		end)
 	end
 
+	spy.Uninit = function()
+		stop()
+	end
 	return spy
 end
 
@@ -25902,6 +26230,7 @@ return {
 	InitDeps      = initDeps,
 	InitAfterMain = initAfterMain,
 	Main          = main,
+	CleanUp       = function() pcall(stop) end,
 	PluginData    = plugin_data,
 }
 ]],
@@ -27540,6 +27869,10 @@ local function main()
 		end)
 	end
 
+	manager.Uninit = function()
+		active = false
+		paused = false
+	end
 	return manager
 end
 
@@ -27547,6 +27880,7 @@ return {
 	InitDeps = initDeps,
 	InitAfterMain = initAfterMain,
 	Main = main,
+	CleanUp = function() active = false paused = false end,
 	PluginData = plugin_data,
 }
 ]],
@@ -28200,7 +28534,7 @@ local function main()
 		update_detail()
 		report_tool()
 
-		local da_con = game.DescendantAdded:Connect(function(inst)
+		local da_con = Main.RegisterConnection(game.DescendantAdded:Connect(function(inst)
 			if active then
 				if typeof(inst) == "Instance" and is_remote_class(inst.ClassName) then
 					note_remote(inst)
@@ -28521,6 +28855,9 @@ local function main()
 		end)
 	end
 
+	spy.Uninit = function()
+		stop()
+	end
 	return spy
 end
 
@@ -28528,6 +28865,7 @@ return {
 	InitDeps      = initDeps,
 	InitAfterMain = initAfterMain,
 	Main          = main,
+	CleanUp       = function() pcall(stop) end,
 	PluginData    = plugin_data,
 }
 ]],

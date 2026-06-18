@@ -86,8 +86,8 @@ local function main()
 	local function start()
 		if running then return end
 		running = true
-		cons[#cons + 1] = game.DescendantAdded:Connect(function(obj) push("added", obj) end)
-		cons[#cons + 1] = game.DescendantRemoving:Connect(function(obj) push("removed", obj) end)
+		cons[#cons + 1] = Main.RegisterConnection(game.DescendantAdded:Connect(function(obj) push("added", obj) end))
+		cons[#cons + 1] = Main.RegisterConnection(game.DescendantRemoving:Connect(function(obj) push("removed", obj) end))
 		render()
 	end
 	local function stop()
@@ -121,6 +121,9 @@ local function main()
 		render()
 	end
 	ActivityMap.Start, ActivityMap.Stop = start, stop
+	ActivityMap.Uninit = function()
+		stop()
+	end
 	return ActivityMap
 end
 

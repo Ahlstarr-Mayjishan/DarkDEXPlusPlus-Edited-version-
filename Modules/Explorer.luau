@@ -928,24 +928,30 @@ local function main()
 		if descendantRemovingCon then descendantRemovingCon:Disconnect() end
 		if itemChangedCon then itemChangedCon:Disconnect() end
 
-		descendantAddedCon = game.DescendantAdded:Connect(safeCallback(addObject))
-		descendantRemovingCon = game.DescendantRemoving:Connect(safeCallback(removeObject))
+		descendantAddedCon = Main.RegisterConnection(game.DescendantAdded:Connect(safeCallback(addObject)))
+		descendantRemovingCon = Main.RegisterConnection(game.DescendantRemoving:Connect(safeCallback(removeObject)))
 
 		if Settings.Explorer.UseNameWidth then
-			itemChangedCon = game.ItemChanged:Connect(safeCallback(function(obj,prop)
+			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
 				if prop == "Parent" and nodes[obj] then
 					moveObject(obj)
 				elseif prop == "Name" and nodes[obj] then
 					nodes[obj].NameWidth = nil
 				end
-			end))
+			end)))
 		else
-			itemChangedCon = game.ItemChanged:Connect(safeCallback(function(obj,prop)
+			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
 				if prop == "Parent" and nodes[obj] then
 					moveObject(obj)
 				end
-			end))
+			end)))
 		end
+	end
+
+	Explorer.Uninit = function()
+		if descendantAddedCon then descendantAddedCon:Disconnect() descendantAddedCon = nil end
+		if descendantRemovingCon then descendantRemovingCon:Disconnect() descendantRemovingCon = nil end
+		if itemChangedCon then itemChangedCon:Disconnect() itemChangedCon = nil end
 	end
 
 	Explorer.ViewNode = function(node)

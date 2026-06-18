@@ -869,6 +869,9 @@ local function main()
 		end)
 	end
 
+	spy.Uninit = function()
+		stop()
+	end
 	return spy
 end
 
@@ -876,5 +879,6 @@ return {
 	InitDeps      = initDeps,
 	InitAfterMain = initAfterMain,
 	Main          = main,
+	CleanUp       = function() pcall(stop) end,
 	PluginData    = plugin_data,
 }

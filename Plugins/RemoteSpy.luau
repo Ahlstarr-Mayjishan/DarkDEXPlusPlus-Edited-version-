@@ -647,7 +647,7 @@ local function main()
 		update_detail()
 		report_tool()
 
-		local da_con = game.DescendantAdded:Connect(function(inst)
+		local da_con = Main.RegisterConnection(game.DescendantAdded:Connect(function(inst)
 			if active then
 				if typeof(inst) == "Instance" and is_remote_class(inst.ClassName) then
 					note_remote(inst)
@@ -968,6 +968,9 @@ local function main()
 		end)
 	end
 
+	spy.Uninit = function()
+		stop()
+	end
 	return spy
 end
 
@@ -975,6 +978,7 @@ return {
 	InitDeps      = initDeps,
 	InitAfterMain = initAfterMain,
 	Main          = main,
+	CleanUp       = function() pcall(stop) end,
 	PluginData    = plugin_data,
 }
 

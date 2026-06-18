@@ -1121,6 +1121,10 @@ local function main()
 		end)
 	end
 
+	manager.Uninit = function()
+		active = false
+		paused = false
+	end
 	return manager
 end
 
@@ -1128,5 +1132,6 @@ return {
 	InitDeps = initDeps,
 	InitAfterMain = initAfterMain,
 	Main = main,
+	CleanUp = function() active = false paused = false end,
 	PluginData = plugin_data,
 }
