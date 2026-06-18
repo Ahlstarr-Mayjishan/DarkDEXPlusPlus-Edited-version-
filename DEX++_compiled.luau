@@ -16252,6 +16252,9 @@ end,
     	local ObjectLinks = {}
     	local window, statusLabel, listFrame
     	local scanToken = 0
+    	local containedScanLimit = 5000
+    	local containedRowLimit = 16
+    	local runtimeConstantScriptLimit = 80
     	local remoteClasses = {
     		RemoteEvent = true, RemoteFunction = true, UnreliableRemoteEvent = true,
     		BindableEvent = true, BindableFunction = true,
@@ -16367,7 +16370,7 @@ end,
     		return map
     	end
     
-    	local function addStructure(obj)
+    	local function addStructure(obj, token)
     		divider("Object")
     		textRow(obj.Name .. " [" .. obj.ClassName .. "]", false)
     		textRow(getPath(obj), true)
@@ -16375,14 +16378,33 @@ end,
     
     		divider("Contained Links")
     		local scripts, remotes, parts = {}, {}, {}
-    		for _, child in pairs(obj:GetDescendants()) do
+    		local descendants = nil
+    		if env.ClientIndex and env.ClientIndex.RefreshSurface then
+    			local surface = env.ClientIndex.RefreshSurface(false)
+    			descendants = surface and surface.AllInstances
+    		end
+    		if not descendants then
+    			local ok, list = pcall(obj.GetDescendants, obj)
+    			descendants = ok and list or {}
+    		end
+    		local scanned = 0
+    		for _, child in pairs(descendants) do
+    			if token ~= scanToken then return end
+    			if obj ~= game and child ~= obj and not child:IsDescendantOf(obj) then continue end
+    			scanned += 1
     			if child:IsA("LuaSourceContainer") then scripts[#scripts + 1] = child
     			elseif remoteClasses[child.ClassName] then remotes[#remotes + 1] = child
     			elseif child:IsA("BasePart") then parts[#parts + 1] = child end
+    			if scanned % 250 == 0 then
+    				setStatus(("Scanning contained links: %d object(s)..."):format(scanned))
+    				task.wait()
+    			end
+    			if scanned >= containedScanLimit then break end
     		end
     		textRow(("scripts: %d  |  remotes/bindables: %d  |  parts: %d"):format(#scripts, #remotes, #parts), true)
-    		for i = 1, math.min(#scripts, 12) do objectRow("Script: ", scripts[i], false) end
-    		for i = 1, math.min(#remotes, 12) do objectRow("Remote: ", remotes[i], false) end
+    		for i = 1, math.min(#scripts, containedRowLimit) do objectRow("Script: ", scripts[i], false) end
+    		for i = 1, math.min(#remotes, containedRowLimit) do objectRow("Remote: ", remotes[i], false) end
+    		if scanned >= containedScanLimit then textRow("Contained scan capped to keep UI responsive.", true) end
     		if #scripts + #remotes == 0 then textRow("No scripts or remotes inside this object.", true) end
     	end
     
@@ -16471,18 +16493,32 @@ end,
     		divider("Runtime Constant References")
     		local tokens = makeTokens(obj)
     		local found = 0
+    		local scanned = 0
     		for _, scriptObj in pairs(env.GetClientScripts(true)) do
     			if token ~= scanToken then return end
-    			for _, constant in pairs(env.GetScriptConstants(scriptObj)) do
-    				local text = tostring(constant)
-    				local hitToken = sourceHit(text, tokens)
-    				if hitToken then
-    					found += 1
-    					scriptHitRow(scriptObj, getPath(scriptObj), "constant mentions " .. hitToken .. " | " .. text)
-    					break
+    			scanned += 1
+    			local ok, constants = pcall(env.GetScriptConstants, scriptObj)
+    			if ok and type(constants) == "table" then
+    				for _, constant in pairs(constants) do
+    					local text = tostring(constant)
+    					local hitToken = sourceHit(text, tokens)
+    					if hitToken then
+    						found += 1
+    						scriptHitRow(scriptObj, getPath(scriptObj), "constant mentions " .. hitToken .. " | " .. text)
+    						break
+    					end
     				end
     			end
-    			task.wait()
+    			if scanned % 10 == 0 then
+    				setStatus(("Scanning runtime constants: %d script(s), %d hit(s)..."):format(scanned, found))
+    				task.wait()
+    			else
+    				task.wait()
+    			end
+    			if scanned >= runtimeConstantScriptLimit then
+    				textRow("Runtime constant scan capped to keep UI responsive.", true)
+    				break
+    			end
     		end
     		if found == 0 then textRow("No runtime constants mention this object.", true) end
     	end
@@ -16493,11 +16529,13 @@ end,
     		local token = scanToken
     		clearRows()
     		window:SetTitle("Object Links - " .. obj.Name)
-    		addStructure(obj)
     		setStatus("Scanning references...")
     		window:Show()
     		task.spawn(function()
+    			addStructure(obj, token)
+    			if token ~= scanToken then return end
     			scanCachedScripts(obj, token)
+    			if token ~= scanToken then return end
     			scanRuntimeConstants(obj, token)
     		end)
     	end
