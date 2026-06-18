@@ -225,6 +225,8 @@ Main = (function()
 	Main.AppControls = {}
 	Main.Apps = Apps
 	Main.MenuApps = {}
+	Main.AppCards = {}
+	Main.MenuSearchText = ""
 	Main.GitName = "Ahlstarr-Mayjishan"
 	Main.RepoName = "DarkDEX----edited-version-by-me-"
 	Main.GitRepoName = Main.GitName.."/"..Main.RepoName
@@ -2266,6 +2268,36 @@ Main = (function()
 		end)()
 	end
 
+	Main.UpdateMenuCanvas = function()
+		if not Main.AppsFrame or not Main.AppsContainerGrid then return end
+		task.defer(function()
+			if not Main.AppsFrame or not Main.AppsContainerGrid then return end
+			local height = math.max(Main.AppsContainerGrid.AbsoluteContentSize.Y + 20, Main.AppsFrame.AbsoluteSize.Y)
+			Main.AppsFrame.CanvasSize = UDim2.new(0,0,0,height)
+		end)
+	end
+
+	Main.ApplyMenuFilter = function()
+		local query = string.lower(Main.MenuSearchText or "")
+		local visible = 0
+		local total = 0
+		for _, card in ipairs(Main.AppCards) do
+			total = total + 1
+			local isVisible = query == "" or string.find(card.SearchText, query, 1, true) ~= nil
+			if Main.HiddenAppsContainer and Main.AppsContainer then
+				card.Gui.Parent = isVisible and Main.AppsContainer or Main.HiddenAppsContainer
+				card.Gui.Visible = true
+			else
+				card.Gui.Visible = isVisible
+			end
+			if isVisible then visible = visible + 1 end
+		end
+		if Main.MenuCountLabel then
+			Main.MenuCountLabel.Text = query == "" and (total .. " tools") or (visible .. " / " .. total .. " tools")
+		end
+		Main.UpdateMenuCanvas()
+	end
+
 	Main.CreateApp = function(data)
 		if Main.MenuApps[data.Name] then return end -- TODO: Handle conflict
 		local control = {}
@@ -2285,9 +2317,19 @@ Main = (function()
 			app.Main.Icon.Image = ""
 		end
 
+		local stroke = app.Main:FindFirstChildOfClass("UIStroke")
 		local function updateState()
-			app.Main.BackgroundTransparency = data.Open and 0 or (Lib.CheckMouseInGui(app.Main) and 0 or 1)
+			local hovering = Lib.CheckMouseInGui(app.Main)
+			app.Main.BackgroundTransparency = 0
+			app.Main.BackgroundColor3 = data.Open and Settings.Theme.Main1 or (hovering and Settings.Theme.ButtonHover or Settings.Theme.Button)
 			app.Main.Highlight.Visible = data.Open
+			if app.Main:FindFirstChild("ActiveMarker") then
+				app.Main.ActiveMarker.Visible = data.Open
+			end
+			if stroke then
+				stroke.Color = data.Open and Settings.Theme.Highlight or Settings.Theme.Outline1
+				stroke.Transparency = data.Open and 0.15 or (hovering and 0.25 or 0.55)
+			end
 		end
 
 		local function enable(silent)
@@ -2312,22 +2354,21 @@ Main = (function()
 
 		updateState()
 
-		local ySize = service.TextService:GetTextSize(data.Name,13,Enum.Font.SourceSans,Vector2.new(80,999999)).Y
-		app.Main.Size = UDim2.new(1,0,0,math.clamp(48+ySize,64,78))
+		local ySize = service.TextService:GetTextSize(data.Name,13,Enum.Font.SourceSans,Vector2.new(88,999999)).Y
+		app.Main.Size = UDim2.new(1,0,0,math.clamp(50+ySize,70,82))
 		app.Main.AppName.Text = data.Name
 
 		app.Main.InputBegan:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-				app.Main.BackgroundTransparency = 0
 				app.Main.BackgroundColor3 = Settings.Theme.ButtonHover
+				if stroke then stroke.Transparency = 0.25 end
 			end
 		end)
 
 
 		app.Main.InputEnded:Connect(function(input)
 			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-				app.Main.BackgroundTransparency = data.Open and 0 or 1
-				app.Main.BackgroundColor3 = Settings.Theme.Button
+				updateState()
 			end
 		end)
 
@@ -2343,7 +2384,12 @@ Main = (function()
 
 		app.Visible = true
 		app.Parent = Main.AppsContainer
-		Main.AppsFrame.CanvasSize = UDim2.new(0,0,0,Main.AppsContainerGrid.AbsoluteCellCount.Y*86 + 12)
+		table.insert(Main.AppCards, {
+			Gui = app,
+			Name = data.Name,
+			SearchText = string.lower(data.Name .. " " .. tostring(data.Icon or ""))
+		})
+		Main.ApplyMenuFilter()
 
 		control.Enable = enable
 		control.Disable = disable
@@ -2420,9 +2466,9 @@ Main = (function()
 	Main.SetMainGuiOpen = function(val)
 		Main.MainGuiOpen = val
 
-		Main.MainGui.OpenButton.Text = val and "Close" or "Dex++"
+		Main.MainGui.OpenButton.Text = val and "Close" or "DEX++"
 		if val then Main.MainGui.OpenButton.MainFrame.Visible = true end
-		Main.MainGui.OpenButton.MainFrame:TweenSize(val and UDim2.new(0,292,0,258) or UDim2.new(0,0,0,0),Enum.EasingDirection.Out,Enum.EasingStyle.Quad,0.2,true)
+		Main.MainGui.OpenButton.MainFrame:TweenSize(val and UDim2.new(0,360,0,430) or UDim2.new(0,0,0,0),Enum.EasingDirection.Out,Enum.EasingStyle.Quad,0.2,true)
 		--Main.MainGui.OpenButton.BackgroundTransparency = val and 0 or (Lib.CheckMouseInGui(Main.MainGui.OpenButton) and 0 or 0.2)
 		service.TweenService:Create(Main.MainGui.OpenButton,TweenInfo.new(0.2,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{BackgroundTransparency = val and 0 or (Lib.CheckMouseInGui(Main.MainGui.OpenButton) and 0 or 0.2)}):Play()
 
@@ -2448,38 +2494,63 @@ Main = (function()
 	Main.CreateMainGui = function()
 		local gui = create({
 			{1,"ScreenGui",{IgnoreGuiInset=true,Name="MainMenu",}},
-			{2,"TextButton",{AnchorPoint=Vector2.new(0.5,0),AutoButtonColor=false,BackgroundColor3=Settings.Theme.Main2,BorderSizePixel=0,Font=Enum.Font.Gotham,Name="OpenButton",Parent={1},Position=UDim2.new(0.5,0,0,2),Size=UDim2.new(0,68,0,34),Text="Dex++",TextColor3=Settings.Theme.Text,TextSize=16,TextTransparency=0.050000000745058,}},
-			{3,"UICorner",{CornerRadius=UDim.new(0,4),Parent={2},}},
-			{4,"Frame",{AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Settings.Theme.Main2,ClipsDescendants=true,Name="MainFrame",Parent={2},Position=UDim2.new(0.5,0,1,-4),Size=UDim2.new(0,292,0,258),}},
-			{5,"UICorner",{CornerRadius=UDim.new(0,4),Parent={4},}},
-			{6,"Frame",{BackgroundColor3=Settings.Theme.Main1,Name="BottomFrame",Parent={4},Position=UDim2.new(0,0,1,-28),Size=UDim2.new(1,0,0,28),}},
-			{7,"UICorner",{CornerRadius=UDim.new(0,4),Parent={6},}},
-			{8,"Frame",{BackgroundColor3=Settings.Theme.Main1,BorderSizePixel=0,Name="CoverFrame",Parent={6},Size=UDim2.new(1,0,0,4),}},
+			{2,"TextButton",{AnchorPoint=Vector2.new(0.5,0),AutoButtonColor=false,BackgroundColor3=Settings.Theme.Main1,BorderSizePixel=0,Font=Enum.Font.GothamBold,Name="OpenButton",Parent={1},Position=UDim2.new(0.5,0,0,4),Size=UDim2.new(0,86,0,36),Text="DEX++",TextColor3=Settings.Theme.Text,TextSize=15,TextTransparency=0.02,}},
+			{3,"UICorner",{CornerRadius=UDim.new(0,8),Parent={2},}},
+			{4,"Frame",{AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Settings.Theme.Main2,ClipsDescendants=true,Name="MainFrame",Parent={2},Position=UDim2.new(0.5,0,1,6),Size=UDim2.new(0,360,0,430),}},
+			{5,"UICorner",{CornerRadius=UDim.new(0,8),Parent={4},}},
+			{6,"Frame",{BackgroundColor3=Settings.Theme.Main1,Name="BottomFrame",Parent={4},Position=UDim2.new(0,0,1,-36),Size=UDim2.new(1,0,0,36),}},
+			{7,"UICorner",{CornerRadius=UDim.new(0,8),Parent={6},}},
+			{8,"Frame",{BackgroundColor3=Settings.Theme.Main1,BorderSizePixel=0,Name="CoverFrame",Parent={6},Size=UDim2.new(1,0,0,6),}},
 			{9,"Frame",{BackgroundColor3=Settings.Theme.Outline1,BorderSizePixel=0,Name="Line",Parent={8},Position=UDim2.new(0,0,0,-1),Size=UDim2.new(1,0,0,1),}},
-			{10,"TextButton",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Font=3,Name="Settings",Parent={6},Position=UDim2.new(1,-48,0,0),Size=UDim2.new(0,24,1,0),Text="",TextColor3=Color3.new(1,1,1),TextSize=14,}},
-			{11,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://6578871732",ImageColor3=Settings.Theme.Text,ImageTransparency=0.10000000149012,Name="Icon",Parent={10},Position=UDim2.new(0,4,0,6),Size=UDim2.new(0,16,0,16),}},
-			{12,"TextButton",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Font=3,Name="Information",Parent={6},Position=UDim2.new(1,-24,0,0),Size=UDim2.new(0,24,1,0),Text="",TextColor3=Color3.new(1,1,1),TextSize=14,}},
-			{13,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://6578933307",ImageColor3=Settings.Theme.Text,ImageTransparency=0.10000000149012,Name="Icon",Parent={12},Position=UDim2.new(0,4,0,6),Size=UDim2.new(0,16,0,16),}},
-			{14,"ScrollingFrame",{Active=true,AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderColor3=Settings.Theme.Outline1,BorderSizePixel=0,Name="AppsFrame",Parent={4},Position=UDim2.new(0.5,0,0,0),ScrollBarImageColor3=Settings.Theme.Highlight,ScrollBarThickness=4,Size=UDim2.new(0,290,1,-29),}},
-			{15,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Name="Container",Parent={14},Position=UDim2.new(0,8,0,10),Size=UDim2.new(1,-16,0,2),}},
-			{16,"UIGridLayout",{CellPadding=UDim2.new(0,2,0,4),CellSize=UDim2.new(0,88,0,78),Parent={15},SortOrder=2,}},
+			{10,"TextButton",{BackgroundColor3=Settings.Theme.Button,BackgroundTransparency=0,BorderSizePixel=0,Font=3,Name="Settings",Parent={6},Position=UDim2.new(1,-76,0,6),Size=UDim2.new(0,30,0,24),Text="",TextColor3=Color3.new(1,1,1),TextSize=14,}},
+			{11,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://6578871732",ImageColor3=Settings.Theme.Text,ImageTransparency=0.05,Name="Icon",Parent={10},Position=UDim2.new(0.5,-8,0.5,-8),Size=UDim2.new(0,16,0,16),}},
+			{12,"TextButton",{BackgroundColor3=Settings.Theme.Button,BackgroundTransparency=0,BorderSizePixel=0,Font=3,Name="Information",Parent={6},Position=UDim2.new(1,-40,0,6),Size=UDim2.new(0,30,0,24),Text="",TextColor3=Color3.new(1,1,1),TextSize=14,}},
+			{13,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://6578933307",ImageColor3=Settings.Theme.Text,ImageTransparency=0.05,Name="Icon",Parent={12},Position=UDim2.new(0.5,-8,0.5,-8),Size=UDim2.new(0,16,0,16),}},
+			{14,"ScrollingFrame",{Active=true,AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderColor3=Settings.Theme.Outline1,BorderSizePixel=0,Name="AppsFrame",Parent={4},Position=UDim2.new(0.5,0,0,102),ScrollBarImageColor3=Settings.Theme.Highlight,ScrollBarThickness=4,Size=UDim2.new(1,-10,1,-138),}},
+			{15,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Name="Container",Parent={14},Position=UDim2.new(0,10,0,8),Size=UDim2.new(1,-22,0,2),}},
+			{16,"UIGridLayout",{CellPadding=UDim2.new(0,8,0,8),CellSize=UDim2.new(0,104,0,80),Parent={15},SortOrder=2,}},
 			{17,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Name="App",Parent={1},Size=UDim2.new(0,100,0,100),Visible=false,}},
-			{18,"TextButton",{AutoButtonColor=false,BackgroundColor3=Settings.Theme.Button,BorderSizePixel=0,Font=3,Name="Main",Parent={17},Size=UDim2.new(1,0,0,64),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
-			{19,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://129589545519436",ImageColor3=Settings.Theme.Text,ImageRectSize=Vector2.new(32,32),Name="Icon",Parent={18},Position=UDim2.new(0.5,-16,0,6),ScaleType=4,Size=UDim2.new(0,32,0,32),}},
-			{20,"TextLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="AppName",Parent={18},Position=UDim2.new(0,4,0,42),Size=UDim2.new(1,-8,1,-44),Text="Explorer",TextColor3=Settings.Theme.Text,TextSize=13,TextTransparency=0.050000000745058,TextTruncate=1,TextWrapped=true,TextYAlignment=0,}},
-			{21,"Frame",{BackgroundColor3=Settings.Theme.ListSelection,BorderSizePixel=0,Name="Highlight",Parent={18},Position=UDim2.new(0,0,1,-2),Size=UDim2.new(1,0,0,2),}},
+			{18,"TextButton",{AutoButtonColor=false,BackgroundColor3=Settings.Theme.Button,BorderSizePixel=0,Font=Enum.Font.GothamBold,Name="Main",Parent={17},Size=UDim2.new(1,0,0,72),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
+			{19,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://129589545519436",ImageColor3=Settings.Theme.Text,ImageRectSize=Vector2.new(32,32),Name="Icon",Parent={18},Position=UDim2.new(0.5,-15,0,9),ScaleType=4,Size=UDim2.new(0,30,0,30),}},
+			{20,"TextLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderSizePixel=0,Font=Enum.Font.GothamBold,Name="AppName",Parent={18},Position=UDim2.new(0,8,0,44),Size=UDim2.new(1,-16,1,-46),Text="Explorer",TextColor3=Settings.Theme.Text,TextSize=12,TextTransparency=0.02,TextTruncate=1,TextWrapped=true,TextYAlignment=0,}},
+			{21,"Frame",{BackgroundColor3=Settings.Theme.ListSelection,BorderSizePixel=0,Name="Highlight",Parent={18},Position=UDim2.new(0,0,1,-3),Size=UDim2.new(1,0,0,3),}},
+			{22,"UIStroke",{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=Settings.Theme.Outline1,Thickness=1,Transparency=0.2,Parent={2},}},
+			{23,"UIStroke",{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=Settings.Theme.Outline1,Thickness=1,Transparency=0.25,Parent={4},}},
+			{24,"Frame",{BackgroundColor3=Settings.Theme.Main1,BorderSizePixel=0,Name="Header",Parent={4},Position=UDim2.new(0,0,0,0),Size=UDim2.new(1,0,0,96),}},
+			{25,"TextLabel",{BackgroundTransparency=1,Font=Enum.Font.GothamBold,Name="Title",Parent={24},Position=UDim2.new(0,14,0,8),Size=UDim2.new(1,-28,0,22),Text="DEX++ Toolkit",TextColor3=Settings.Theme.Text,TextSize=16,TextXAlignment=0,}},
+			{26,"TextLabel",{BackgroundTransparency=1,Font=Enum.Font.Gotham,Name="Subtitle",Parent={24},Position=UDim2.new(0,14,0,29),Size=UDim2.new(1,-28,0,18),Text="Client-side explorer and debugging suite",TextColor3=Settings.Theme.PlaceholderText,TextSize=11,TextXAlignment=0,}},
+			{27,"TextBox",{BackgroundColor3=Settings.Theme.TextBox,BorderSizePixel=0,ClearTextOnFocus=false,Font=Enum.Font.Code,Name="SearchBox",Parent={24},PlaceholderColor3=Settings.Theme.PlaceholderText,PlaceholderText="Search tools or plugins",Position=UDim2.new(0,12,0,56),Size=UDim2.new(1,-24,0,28),Text="",TextColor3=Settings.Theme.Text,TextSize=12,TextXAlignment=0,}},
+			{28,"UICorner",{CornerRadius=UDim.new(0,6),Parent={27},}},
+			{29,"UIStroke",{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=Settings.Theme.Outline1,Thickness=1,Transparency=0.35,Parent={27},}},
+			{30,"TextLabel",{BackgroundTransparency=1,Font=Enum.Font.Gotham,Name="AppCount",Parent={6},Position=UDim2.new(0,12,0,0),Size=UDim2.new(1,-98,1,0),Text="0 tools",TextColor3=Settings.Theme.PlaceholderText,TextSize=12,TextXAlignment=0,}},
+			{31,"UICorner",{CornerRadius=UDim.new(0,6),Parent={10},}},
+			{32,"UICorner",{CornerRadius=UDim.new(0,6),Parent={12},}},
+			{33,"UICorner",{CornerRadius=UDim.new(0,7),Parent={18},}},
+			{34,"UIStroke",{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=Settings.Theme.Outline1,Thickness=1,Transparency=0.55,Parent={18},}},
+			{35,"Frame",{BackgroundColor3=Settings.Theme.Highlight,BorderSizePixel=0,Name="ActiveMarker",Parent={18},Position=UDim2.new(0,0,0,0),Size=UDim2.new(0,3,1,0),Visible=false,}},
 		})
 		Main.MainGui = gui
 		Main.AppsFrame = gui.OpenButton.MainFrame.AppsFrame
 		Main.AppsContainer = Main.AppsFrame.Container
 		Main.AppsContainerGrid = Main.AppsContainer.UIGridLayout
 		Main.AppTemplate = gui.App
+		Main.HiddenAppsContainer = Instance.new("Frame")
+		Main.HiddenAppsContainer.Name = "HiddenApps"
+		Main.HiddenAppsContainer.Visible = false
+		Main.HiddenAppsContainer.Parent = gui
+		Main.MenuSearchBox = gui.OpenButton.MainFrame.Header.SearchBox
+		Main.MenuCountLabel = gui.OpenButton.MainFrame.BottomFrame.AppCount
 		Main.MainGuiOpen = false
 
 		local openButton = gui.OpenButton
 		openButton.BackgroundTransparency = 0.2
 		openButton.MainFrame.Size = UDim2.new(0,0,0,0)
 		openButton.MainFrame.Visible = false
+		Main.MenuSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+			Main.MenuSearchText = Main.MenuSearchBox.Text
+			Main.ApplyMenuFilter()
+		end)
+		Main.AppsContainerGrid:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(Main.UpdateMenuCanvas)
 		openButton.MouseButton1Click:Connect(function()
 			Main.SetMainGuiOpen(not Main.MainGuiOpen)
 		end)
@@ -2791,6 +2862,11 @@ Main = (function()
 			Main.MainGuiMouseEvent = nil
 		end
 		Main.MenuApps = {}
+		Main.AppCards = {}
+		Main.MenuSearchText = ""
+		Main.MenuSearchBox = nil
+		Main.MenuCountLabel = nil
+		Main.HiddenAppsContainer = nil
 		Main.AppControls = {}
 		Main.Plugins = {}
 		for _, gui in pairs(Main.GetSecureContainer():GetChildren()) do
