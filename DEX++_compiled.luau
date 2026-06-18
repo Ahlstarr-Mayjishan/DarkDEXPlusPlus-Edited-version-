@@ -2777,6 +2777,7 @@ end,
     		end
     
     		local function buildAIPrompt()
+    			local sList = selection and selection.List or {}
     			local lines = {
     				"You are helping me inspect Roblox objects in DEX++.",
     				"I am a beginner, so explain in simple language and keep jargon low.",
@@ -2790,7 +2791,9 @@ end,
     				("Count: %d"):format(#sList),
     			}
     			for i = 1, math.min(#sList, 6) do
-    				lines[#lines + 1] = summarizeForAI(sList[i].Obj)
+    				if sList[i] and sList[i].Obj then
+    					lines[#lines + 1] = summarizeForAI(sList[i].Obj)
+    				end
     			end
     			if #sList > 6 then
     				lines[#lines + 1] = ("... and %d more selected object(s)."):format(#sList - 6)
@@ -4141,8 +4144,13 @@ end,
     		Explorer.SetupConnections()
     
     		local insts = getDescendants(game)
+    		local buildYieldAt = os.clock() + 0.02
     		if Main.Elevated then
     			for i = 1,#insts do
+    				if i % 500 == 0 and os.clock() >= buildYieldAt then
+    					buildYieldAt = os.clock() + 0.02
+    					task.wait()
+    				end
     				local obj = insts[i]
     				local par = nodes[ffa(obj,"Instance")]
     				if not par then continue end
@@ -4155,6 +4163,10 @@ end,
     			end
     		else
     			for i = 1,#insts do
+    				if i % 500 == 0 and os.clock() >= buildYieldAt then
+    					buildYieldAt = os.clock() + 0.02
+    					task.wait()
+    				end
     				local obj = insts[i]
     				local s,parObj = pcall(ffa,obj,"Instance")
     				local par = nodes[parObj]
@@ -14863,7 +14875,19 @@ end,
     			reloadButton.Position = UDim2.new(0,5,1,-5)
     			reloadButton.Size = UDim2.new(0.5,-5,0,20)
     			reloadButton.OnClick:Connect(function()
-    				Main.Reinit()
+    				reloadButton:SetDisabled(true)
+    				reloadButton.Text = "Restarting"
+    				cancelButton:SetDisabled(true)
+    				if Main.Reinit and Main.Reinit() then
+    					win:Close()
+    				else
+    					reloadButton.Text = "Busy"
+    					task.delay(1, function()
+    						reloadButton:SetDisabled(false)
+    						cancelButton:SetDisabled(false)
+    						reloadButton.Text = "Apply Now"
+    					end)
+    				end
     			end)
     
     			win:Add(reloadButton,"reloadButton")
@@ -15071,16 +15095,22 @@ end,
     		reloadButton.Position = UDim2.new(0,0, 0,0)
     		reloadButton.Transparency = 1
     		
+    		local reloadClickBusy = false
     		reloadButton.MouseButton1Click:Connect(function()
+    			if reloadClickBusy then return end
+    			reloadClickBusy = true
     			window:SetTitle("Settings - Saving")
     			
     			Main.SaveCurrentSettings()
     			
     			window:SetTitle("Settings - Saved")
     			SettingsWindow.ReloadPrompt()
-    			task.wait(3)
-    			
-    			window:SetTitle("Settings")
+    			task.delay(3, function()
+    				reloadClickBusy = false
+    				if window and not window.Closed then
+    					window:SetTitle("Settings")
+    				end
+    			end)
     		end)
     	end
     
@@ -22679,6 +22709,7 @@ Main = (function()
 	end
 
 	Main.RestartFromLatest = function()
+		if Main.Restarting then return true end
 		local source = Main.LatestUpdateSource
 		if not source or source == "" then
 			local updateUrl = Main.GetUpdateScriptURL()
@@ -22691,14 +22722,28 @@ Main = (function()
 		local loader = env and env.loadstring or loadstring
 		if not loader then return false end
 
-		Main.Uninit()
-		task.wait()
-		local ok, fn = pcall(loader, source, "DEX++ Latest")
-		if ok and type(fn) == "function" then
-			coroutine.wrap(fn)()
-			return true
-		end
-		return false
+		Main.Restarting = true
+		task.spawn(function()
+			local restarted = false
+			local okRestart, restartErr = pcall(function()
+				Main.Uninit()
+				task.wait(0.2)
+				local ok, fn = pcall(loader, source, "DEX++ Latest")
+				if ok and type(fn) == "function" then
+					restarted = true
+					task.spawn(fn)
+				elseif not ok then
+					warn("DEX++ latest restart load failed: " .. tostring(fn))
+				end
+			end)
+			if not okRestart then
+				warn("DEX++ latest restart failed: " .. tostring(restartErr))
+			end
+			if not restarted then
+				Main.Restarting = false
+			end
+		end)
+		return true
 	end
 
 	Main.ShowUpdatePrompt = function(latestVersion)
@@ -23229,6 +23274,10 @@ Main = (function()
 	end
 	
 	Main.Uninit = function()
+		if Main.MainGuiMouseEvent then
+			pcall(function() Main.MainGuiMouseEvent:Disconnect() end)
+			Main.MainGuiMouseEvent = nil
+		end
 		Main.MenuApps = {}
 		Main.AppControls = {}
 		Main.Plugins = {}
@@ -23240,9 +23289,20 @@ Main = (function()
 	end
 
 	Main.Reinit = function()
-		Main.Uninit()
-		task.wait()
-		Main.Init()
+		if Main.Restarting then return false end
+		Main.Restarting = true
+		task.spawn(function()
+			local ok, err = pcall(function()
+				Main.Uninit()
+				task.wait(0.2)
+				Main.Init()
+			end)
+			Main.Restarting = false
+			if not ok then
+				warn("DEX++ restart failed: " .. tostring(err))
+			end
+		end)
+		return true
 	end
 
 	return Main

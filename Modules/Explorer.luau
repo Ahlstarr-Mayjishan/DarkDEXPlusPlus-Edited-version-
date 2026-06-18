@@ -1514,6 +1514,7 @@ local function main()
 		end
 
 		local function buildAIPrompt()
+			local sList = selection and selection.List or {}
 			local lines = {
 				"You are helping me inspect Roblox objects in DEX++.",
 				"I am a beginner, so explain in simple language and keep jargon low.",
@@ -1527,7 +1528,9 @@ local function main()
 				("Count: %d"):format(#sList),
 			}
 			for i = 1, math.min(#sList, 6) do
-				lines[#lines + 1] = summarizeForAI(sList[i].Obj)
+				if sList[i] and sList[i].Obj then
+					lines[#lines + 1] = summarizeForAI(sList[i].Obj)
+				end
 			end
 			if #sList > 6 then
 				lines[#lines + 1] = ("... and %d more selected object(s)."):format(#sList - 6)
@@ -2878,8 +2881,13 @@ return search]==]
 		Explorer.SetupConnections()
 
 		local insts = getDescendants(game)
+		local buildYieldAt = os.clock() + 0.02
 		if Main.Elevated then
 			for i = 1,#insts do
+				if i % 500 == 0 and os.clock() >= buildYieldAt then
+					buildYieldAt = os.clock() + 0.02
+					task.wait()
+				end
 				local obj = insts[i]
 				local par = nodes[ffa(obj,"Instance")]
 				if not par then continue end
@@ -2892,6 +2900,10 @@ return search]==]
 			end
 		else
 			for i = 1,#insts do
+				if i % 500 == 0 and os.clock() >= buildYieldAt then
+					buildYieldAt = os.clock() + 0.02
+					task.wait()
+				end
 				local obj = insts[i]
 				local s,parObj = pcall(ffa,obj,"Instance")
 				local par = nodes[parObj]

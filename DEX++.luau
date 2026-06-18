@@ -2101,6 +2101,7 @@ Main = (function()
 	end
 
 	Main.RestartFromLatest = function()
+		if Main.Restarting then return true end
 		local source = Main.LatestUpdateSource
 		if not source or source == "" then
 			local updateUrl = Main.GetUpdateScriptURL()
@@ -2113,14 +2114,28 @@ Main = (function()
 		local loader = env and env.loadstring or loadstring
 		if not loader then return false end
 
-		Main.Uninit()
-		task.wait()
-		local ok, fn = pcall(loader, source, "DEX++ Latest")
-		if ok and type(fn) == "function" then
-			coroutine.wrap(fn)()
-			return true
-		end
-		return false
+		Main.Restarting = true
+		task.spawn(function()
+			local restarted = false
+			local okRestart, restartErr = pcall(function()
+				Main.Uninit()
+				task.wait(0.2)
+				local ok, fn = pcall(loader, source, "DEX++ Latest")
+				if ok and type(fn) == "function" then
+					restarted = true
+					task.spawn(fn)
+				elseif not ok then
+					warn("DEX++ latest restart load failed: " .. tostring(fn))
+				end
+			end)
+			if not okRestart then
+				warn("DEX++ latest restart failed: " .. tostring(restartErr))
+			end
+			if not restarted then
+				Main.Restarting = false
+			end
+		end)
+		return true
 	end
 
 	Main.ShowUpdatePrompt = function(latestVersion)
@@ -2651,6 +2666,10 @@ Main = (function()
 	end
 	
 	Main.Uninit = function()
+		if Main.MainGuiMouseEvent then
+			pcall(function() Main.MainGuiMouseEvent:Disconnect() end)
+			Main.MainGuiMouseEvent = nil
+		end
 		Main.MenuApps = {}
 		Main.AppControls = {}
 		Main.Plugins = {}
@@ -2662,9 +2681,20 @@ Main = (function()
 	end
 
 	Main.Reinit = function()
-		Main.Uninit()
-		task.wait()
-		Main.Init()
+		if Main.Restarting then return false end
+		Main.Restarting = true
+		task.spawn(function()
+			local ok, err = pcall(function()
+				Main.Uninit()
+				task.wait(0.2)
+				Main.Init()
+			end)
+			Main.Restarting = false
+			if not ok then
+				warn("DEX++ restart failed: " .. tostring(err))
+			end
+		end)
+		return true
 	end
 
 	return Main

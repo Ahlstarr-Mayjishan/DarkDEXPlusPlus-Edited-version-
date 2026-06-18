@@ -226,7 +226,19 @@ local function main()
 			reloadButton.Position = UDim2.new(0,5,1,-5)
 			reloadButton.Size = UDim2.new(0.5,-5,0,20)
 			reloadButton.OnClick:Connect(function()
-				Main.Reinit()
+				reloadButton:SetDisabled(true)
+				reloadButton.Text = "Restarting"
+				cancelButton:SetDisabled(true)
+				if Main.Reinit and Main.Reinit() then
+					win:Close()
+				else
+					reloadButton.Text = "Busy"
+					task.delay(1, function()
+						reloadButton:SetDisabled(false)
+						cancelButton:SetDisabled(false)
+						reloadButton.Text = "Apply Now"
+					end)
+				end
 			end)
 
 			win:Add(reloadButton,"reloadButton")
@@ -434,16 +446,22 @@ local function main()
 		reloadButton.Position = UDim2.new(0,0, 0,0)
 		reloadButton.Transparency = 1
 		
+		local reloadClickBusy = false
 		reloadButton.MouseButton1Click:Connect(function()
+			if reloadClickBusy then return end
+			reloadClickBusy = true
 			window:SetTitle("Settings - Saving")
 			
 			Main.SaveCurrentSettings()
 			
 			window:SetTitle("Settings - Saved")
 			SettingsWindow.ReloadPrompt()
-			task.wait(3)
-			
-			window:SetTitle("Settings")
+			task.delay(3, function()
+				reloadClickBusy = false
+				if window and not window.Closed then
+					window:SetTitle("Settings")
+				end
+			end)
 		end)
 	end
 
