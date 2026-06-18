@@ -487,7 +487,7 @@ Main = (function()
 			end
 
 			if not control then
-				if EmbeddedModules then -- Offline Modules
+				if EmbeddedModules and EmbeddedModules[name] then -- Offline Modules
 					control = loadEmbeddedControl()
 				else
 					-- Get hash data
@@ -1060,6 +1060,14 @@ Main = (function()
 				return nil
 			end
 
+			function helper.Decompile(bytecode)
+				local result = helper.Request("/decompile", "POST", bytecode, "application/octet-stream")
+				if result and result.StatusCode == 200 and type(result.Body) == "string" then
+					return result.Body
+				end
+				return nil
+			end
+
 			function helper.Log(line)
 				local result = helper.Request("/log", "POST", tostring(line), "text/plain")
 				return result and result.StatusCode == 200
@@ -1343,6 +1351,16 @@ Main = (function()
 
 			-- If native failed or was skipped, try fallbacks using bytecode
 			if typeof(getscriptbytecode) == "function" then
+				-- Helper Fallback (offload to external decompiler backend)
+				if Settings.Decompiler.UseLocalHelper == true and env.HelperServer and env.HelperServer.Decompile then
+					local success, bytecode = pcall(env.getscriptbytecode, script_instance)
+					if success and bytecode then
+						local decompiled = env.HelperServer.Decompile(bytecode)
+						if decompiled and not decompiled:match("Deserialization failed") and not decompiled:match("Error") then
+							return decompiled
+						end
+					end
+				end
 				-- Fallback 1: Shiny Local Decompiler
 				if Settings.Decompiler.DecompilerFallback == "Shiny" then
 					local success, bytecode = pcall(env.getscriptbytecode, script_instance)

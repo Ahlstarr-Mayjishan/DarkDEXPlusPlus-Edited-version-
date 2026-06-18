@@ -6,6 +6,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -20,6 +21,7 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 // Link with ws2_32.lib
 #pragma comment(lib, "ws2_32.lib")
@@ -51,6 +53,8 @@ struct IndexedScript {
 std::unordered_map<std::string, IndexedScript> g_script_index;
 std::mutex g_script_index_mutex;
 std::mutex g_log_mutex;
+std::mutex g_tool_state_mutex;
+std::string g_tool_state_json = "{\"ok\":true,\"tools\":{},\"updatedAt\":0}";
 std::atomic<int> g_active_clients{0};
 
 // Fast C++ linear-time variable normalizer. This is a source cleanup pass, not a full deobfuscator.
@@ -59,6 +63,10 @@ std::string normalize_source(const std::string& source) {
     int var_counter = 0;
 
     auto is_obfuscated = [](const std::string& name) {
+        if (name.empty()) return false;
+        // Skip numbers/constants (identifiers cannot start with a digit)
+        if (std::isdigit(static_cast<unsigned char>(name[0]))) return false;
+
         // Skip keywords
         static const std::unordered_set<std::string> reserved = {
             "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
@@ -967,6 +975,29 @@ size_t file_size_or_zero(const char* path) {
     return static_cast<size_t>(size);
 }
 
+std::string get_tool_state_response() {
+    std::lock_guard<std::mutex> lock(g_tool_state_mutex);
+    return g_tool_state_json;
+}
+
+std::string set_tool_state_response(const std::string& body) {
+    std::string trimmed = trim_copy(body);
+    if (trimmed.empty()) {
+        return "{\"ok\":false,\"error\":\"empty tool state\"}";
+    }
+    if (trimmed.size() > 262144) {
+        return "{\"ok\":false,\"error\":\"tool state too large\"}";
+    }
+    if (trimmed.front() != '{') {
+        return "{\"ok\":false,\"error\":\"tool state must be json object\"}";
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_tool_state_mutex);
+        g_tool_state_json = trimmed;
+    }
+    return "{\"ok\":true}";
+}
+
 void rotate_log_if_needed(const char* path) {
     if (file_size_or_zero(path) < MAX_LOG_FILE_SIZE) return;
     std::string old_path = std::string(path) + ".old";
@@ -991,6 +1022,7 @@ aside{border-right:1px solid var(--line);background:#12151a;padding:14px;display
 section{padding:14px;display:grid;grid-template-rows:auto 1fr;gap:12px;min-width:0}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px}.title{font-weight:650;margin-bottom:8px}
 .metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:9px}.metric b{display:block;font-size:18px}.metric span{color:var(--muted);font-size:12px}
+.stateRows{display:flex;flex-direction:column;gap:7px}.stateRow{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:8px}.stateRow b{display:block;font-size:13px}.stateRow span{display:block;color:var(--muted);font:12px Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bar{height:6px;background:#0f1115;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;width:0;background:var(--accent2)}
 button,input,textarea{font:inherit}button{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:4px;height:30px;padding:0 10px;cursor:pointer}button:hover{border-color:var(--accent);background:#252b35}button.primary{background:var(--accent);border-color:var(--accent);color:white}.row{display:flex;gap:8px;align-items:center}.row>*{min-width:0}
 input,textarea{width:100%;background:#0f1115;border:1px solid var(--line);color:var(--text);border-radius:4px;padding:8px;outline:none}input:focus,textarea:focus{border-color:var(--accent)}textarea{min-height:160px;resize:vertical;font-family:Consolas,monospace}
 .toolbar{display:grid;grid-template-columns:1fr auto auto;gap:8px}.tabs{display:flex;gap:6px}.tab{height:30px}.tab.active{border-color:var(--accent);color:white}
@@ -1010,6 +1042,12 @@ input,textarea{width:100%;background:#0f1115;border:1px solid var(--line);color:
       <div class="metric"><b id="bytes">0</b><span>bytes</span></div>
     </div>
     <div class="row" style="margin-top:10px"><button id="refresh">Refresh</button><button id="load">Load</button><button id="save">Save</button><button id="clear">Clear</button></div>
+  </div>
+  <div class="card">
+    <div class="title">Live DEX</div>
+    <div id="liveDex" class="stateRows">
+      <div class="stateRow"><b>Waiting for Roblox</b><span>Enable Use Local Helper and run an index/control tool.</span></div>
+    </div>
   </div>
   <div class="card">
     <div class="title">Roblox Smooth Mode</div>
@@ -1056,6 +1094,9 @@ const fmt=n=>Number(n||0).toLocaleString();
 function setStatus(text, cls){const p=$('statusPill');p.textContent=text;p.className='pill '+(cls||'')}
 async function textFetch(path, opts={}){const r=await fetch(path,opts);const t=await r.text();if(!r.ok)throw new Error(t||r.statusText);return t}
 async function refreshStatus(){try{await textFetch('/status');setStatus('active','ok');const raw=await textFetch('/index-status');const j=JSON.parse(raw);$('scripts').textContent=fmt(j.scripts);$('bytes').textContent=fmt(j.bytes)}catch(e){setStatus('offline','bad')}}
+function pct(v){const n=Math.max(0,Math.min(1,Number(v||0)));return Math.round(n*100)}
+function toolLine(name,t){const progress=t.Progress!==undefined?pct(t.Progress):null;const cls=t.Load==='high'?'bad':(t.Load==='medium'||t.Load==='variable'?'warn':'ok');let meta=`${t.State||'unknown'} | load ${t.Load||'n/a'}`;if(t.Total!==undefined)meta+=` | ${progress}% | ${fmt(t.Cached)} cached | ${fmt(t.Decompiled)} new | ${fmt(t.Skipped)} skipped | ${fmt(t.Failed)} failed`;else if(name==='Remote Spy')meta+=` | ${fmt(t.Remotes)} remotes | ${fmt(t.Logs)} logs | ${fmt(t.Dropped)} dropped`;else if(name==='Property Tracker')meta+=` | ${fmt(t.Tracked)} objects | ${fmt(t.Properties)} props | ${fmt(t.Logs)} logs`;else if(name==='Thread Manager')meta+=` | ${fmt(t.Scripts)} scripts | ${fmt(t.Threads)} threads`;return `<div class="stateRow"><b>${esc(name)} <span class="${cls}" style="display:inline">${esc(t.State||'')}</span></b><span>${esc(meta)}</span>${progress!==null?`<div class="bar"><i style="width:${progress}%"></i></div>`:''}</div>`}
+async function refreshToolState(){try{const raw=await textFetch('/tool-state');const j=JSON.parse(raw);const tools=j.tools||{};const names=Object.keys(tools).sort((a,b)=>Number(tools[b].UpdatedAt||0)-Number(tools[a].UpdatedAt||0));$('liveDex').innerHTML=names.length?names.slice(0,6).map(n=>toolLine(n,tools[n]||{})).join(''):'<div class="stateRow"><b>No live tool state</b><span>DEX has not reported yet.</span></div>'}catch(e){$('liveDex').innerHTML='<div class="stateRow"><b class="bad">Live state unavailable</b><span>'+esc(e.message)+'</span></div>'}}
 function show(view){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.view===view));['resultsView','analysisView','remoteView','helpView'].forEach(id=>$(id).classList.toggle('hidden',id!==view))}
 function hitHtml(item){return `<div class="hit"><h3>${esc(item.name||item.key||'script')} <span class="muted">[${esc(item.className||'')}</span>]</h3><div class="meta">${esc(item.path||'')}</div><div class="meta">${esc(item.matchType||'hit')} score ${esc(item.score||0)} confidence ${Math.round(Number(item.confidence||0)*100)}%</div><pre>${esc(item.snippet||'')}</pre></div>`}
 function remoteHtml(item){const methods=Object.entries(item.methods||{}).map(([k,v])=>`${k}:${v}`).join(' ');const flags=(item.flags||[]).join(', ')||'none';const samples=(item.samples||[]).map(s=>`- ${s}`).join('\n');return `<div class="hit"><h3>${esc(item.path)} <span class="${Number(item.risk||0)>0?'warn':'ok'}">risk ${esc(item.risk||0)}</span></h3><div class="meta">calls ${esc(item.calls||0)} | out ${esc(item.outgoing||0)} | in ${esc(item.incoming||0)} | ${esc(methods)}</div><div class="meta">flags: ${esc(flags)}</div><pre>${esc(samples||'no args sample')}</pre></div>`}
@@ -1072,9 +1113,169 @@ $('remoteAnalyze').onclick=async()=>{show('remoteView');$('remoteView').innerHTM
 $('script').onclick=()=>window.open('/script','_blank');
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>show(b.dataset.view));
 refreshStatus();
+refreshToolState();
+setInterval(refreshToolState,1000);
 </script>
 </body>
 </html>)DEXAPP";
+}
+
+// Check and auto-launch Potassium Decompiler if not running
+void ensure_decompiler_running() {
+    struct addrinfo* result = NULL;
+    struct addrinfo hints;
+    ZeroMemory(&hints, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    int iResult = getaddrinfo("::1", "56535", &hints, &result);
+    if (iResult != 0) {
+        iResult = getaddrinfo("127.0.0.1", "56535", &hints, &result);
+    }
+    if (iResult == 0) {
+        SOCKET ConnectSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+        if (ConnectSocket != INVALID_SOCKET) {
+            iResult = connect(ConnectSocket, result->ai_addr, (int)result->ai_addrlen);
+            if (iResult != SOCKET_ERROR) {
+                closesocket(ConnectSocket);
+                freeaddrinfo(result);
+                return; // Already running!
+            }
+            closesocket(ConnectSocket);
+        }
+        freeaddrinfo(result);
+    }
+
+    std::cout << "[Decompiler] Potassium Decompiler is offline. Launching Decompiler.exe..." << std::endl;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    const char* path = "D:\\Exploiter\\Potassium\\bin\\Decompiler.exe";
+    const char* dir = "D:\\Exploiter\\Potassium\\bin";
+
+    BOOL success = CreateProcessA(
+        path,
+        NULL,
+        NULL,
+        NULL,
+        FALSE,
+        CREATE_NO_WINDOW,
+        NULL,
+        dir,
+        &si,
+        &pi
+    );
+
+    if (success) {
+        std::cout << "[Decompiler] Successfully launched Decompiler.exe (PID: " << pi.dwProcessId << ")" << std::endl;
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Wait for server to bind
+    } else {
+        std::cerr << "[Decompiler] Failed to launch Decompiler.exe. Error code: " << GetLastError() << std::endl;
+    }
+}
+
+// Proxies decompile request to local Rust luau-lifter server
+std::string decompile_bytecode(const std::string& bytecode) {
+    ensure_decompiler_running();
+
+    std::string boundary = "----DarkDexHelperBoundary";
+    
+    // Construct the multipart body
+    std::string body;
+    body += "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"bytecode\"; filename=\"script.luac\"\r\n";
+    body += "Content-Type: application/octet-stream\r\n\r\n";
+    body += bytecode;
+    body += "\r\n--" + boundary + "--\r\n";
+
+    // Construct the HTTP headers
+    std::stringstream request;
+    request << "POST /decompile HTTP/1.1\r\n"
+            << "Host: [::1]:56535\r\n"
+            << "Content-Type: multipart/form-data; boundary=" << boundary << "\r\n"
+            << "Content-Length: " << body.length() << "\r\n"
+            << "Connection: close\r\n\r\n"
+            << body;
+
+    std::string request_str = request.str();
+
+    // Setup connection
+    struct addrinfo* result = NULL;
+    struct addrinfo hints;
+    ZeroMemory(&hints, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    int iResult = getaddrinfo("::1", "56535", &hints, &result);
+    if (iResult != 0) {
+        iResult = getaddrinfo("127.0.0.1", "56535", &hints, &result);
+    }
+    if (iResult != 0) {
+        return "-- Error: getaddrinfo failed for decompiler server.";
+    }
+
+    SOCKET ConnectSocket = INVALID_SOCKET;
+    for (struct addrinfo* ptr = result; ptr != NULL; ptr = ptr->ai_next) {
+        ConnectSocket = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
+        if (ConnectSocket == INVALID_SOCKET) {
+            continue;
+        }
+
+        iResult = connect(ConnectSocket, ptr->ai_addr, (int)ptr->ai_addrlen);
+        if (iResult == SOCKET_ERROR) {
+            closesocket(ConnectSocket);
+            ConnectSocket = INVALID_SOCKET;
+            continue;
+        }
+        break;
+    }
+
+    freeaddrinfo(result);
+
+    if (ConnectSocket == INVALID_SOCKET) {
+        return "-- Error: Could not connect to Potassium Decompiler server (port 56535).";
+    }
+
+    // Send the request
+    int bytes_sent = send(ConnectSocket, request_str.c_str(), (int)request_str.length(), 0);
+    if (bytes_sent == SOCKET_ERROR) {
+        closesocket(ConnectSocket);
+        return "-- Error: Failed to send request to Decompiler.";
+    }
+
+    // Read the response
+    std::string response;
+    char recvbuf[BUFFER_SIZE];
+    int bytes_received;
+    do {
+        bytes_received = recv(ConnectSocket, recvbuf, BUFFER_SIZE, 0);
+        if (bytes_received > 0) {
+            response.append(recvbuf, bytes_received);
+        }
+    } while (bytes_received > 0);
+
+    closesocket(ConnectSocket);
+
+    // Parse the HTTP response body
+    size_t header_end = response.find("\r\n\r\n");
+    if (header_end == std::string::npos) {
+        return "-- Error: Invalid HTTP response from Decompiler.";
+    }
+
+    // Check status code
+    std::string status_line = response.substr(0, response.find("\r\n"));
+    if (status_line.find("200") == std::string::npos) {
+        return "-- Error: Decompiler server returned non-200 status:\n-- " + status_line;
+    }
+
+    return response.substr(header_end + 4);
 }
 
 // Send HTTP response helper
@@ -1200,6 +1401,10 @@ void handle_client(SOCKET ClientSocket) {
             send_response(ClientSocket, 200, "OK", search_index(body));
         } else if (path == "/index-status" && method == "GET") {
             send_response(ClientSocket, 200, "OK", index_status());
+        } else if (path == "/tool-state" && method == "GET") {
+            send_response(ClientSocket, 200, "OK", get_tool_state_response(), "application/json");
+        } else if (path == "/tool-state" && method == "POST") {
+            send_response(ClientSocket, 200, "OK", set_tool_state_response(body), "application/json");
         } else if (path == "/index-save" && method == "POST") {
             send_response(ClientSocket, 200, "OK", save_index_response());
         } else if (path == "/index-load" && method == "POST") {
@@ -1212,12 +1417,7 @@ void handle_client(SOCKET ClientSocket) {
         } else if (path == "/assign-role" && method == "POST") {
             send_response(ClientSocket, 200, "OK", assign_role(body));
         } else if (path == "/decompile" && method == "POST") {
-            send_response(
-                ClientSocket,
-                501,
-                "Not Implemented",
-                "DEX++ Helper does not include a bytecode decompiler. It serves local script delivery, log, source normalization, source analysis, and persistent source index/search."
-            );
+            send_response(ClientSocket, 200, "OK", decompile_bytecode(body));
         } else {
             send_response(ClientSocket, 404, "Not Found", "404 Route Not Found");
         }
