@@ -75,6 +75,7 @@ local function main()
 	end
 	local function clearRows()
 		if not listFrame then return end
+		listFrame.CanvasPosition = Vector2.new(0, 0)
 		for _, child in pairs(listFrame:GetChildren()) do
 			if child:IsA("GuiButton") or child:IsA("TextLabel") then
 				child:Destroy()

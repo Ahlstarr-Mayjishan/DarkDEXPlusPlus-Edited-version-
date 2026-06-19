@@ -346,6 +346,7 @@ local function main()
 
 	local function clearResults()
 		if not resultsFrame then return end
+		resultsFrame.CanvasPosition = Vector2.new(0, 0)
 		for _, child in pairs(resultsFrame:GetChildren()) do
 			if child:IsA("TextButton") then
 				child:Destroy()
@@ -958,14 +959,17 @@ local function main()
 		return true
 	end
 
-	local function pushToHelperIndex(scriptInstance, key)
+	local function pushToHelperIndex(scriptInstance, key, source)
 		if not key or not env.HelperServer or not env.HelperServer.IndexSource then return false end
 		if helperIndexedKeys[key] then return false end
 		if env.HelperServer.IsActive and not env.HelperServer.IsActive(false) then return false end
-		if not env.DecompileCache or not env.DecompileCache.Read then return false end
 
-		local okSource, source = pcall(env.DecompileCache.Read, scriptInstance)
-		if not okSource or not isValidDecompileSource(source) then return false end
+		if not source then
+			if not env.DecompileCache or not env.DecompileCache.Read then return false end
+			local okSource
+			okSource, source = pcall(env.DecompileCache.Read, scriptInstance)
+			if not okSource or not isValidDecompileSource(source) then return false end
+		end
 
 		local okPath, path = pcall(function()
             if Main and Main.SafeGetInstancePath then return Main.SafeGetInstancePath(scriptInstance) end
@@ -1138,31 +1142,37 @@ local function main()
 
 				local key = getScriptKey(scriptInstance)
 				if key and indexedKeys[key] and hasCachedFile(scriptInstance) then
-					local validCached = validateCachedSource(scriptInstance)
+					local validCached, cachedSource = validateCachedSource(scriptInstance)
 					if validCached then
 						cached += 1
-						if pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
+						if pushToHelperIndex(scriptInstance, key, cachedSource) then
+							helperIndexed += 1
+							task.wait()
+						end
 					else
 						failed += 1
 					end
 					batchCount += 1
-					if batchCount % 100 == 0 then
+					if batchCount % 10 == 0 then
 						task.wait()
 					end
 					continue
 				end
 
 				if hasCachedFile(scriptInstance) then
-					local validCached = validateCachedSource(scriptInstance)
+					local validCached, cachedSource = validateCachedSource(scriptInstance)
 					if validCached then
 						if key then indexedKeys[key] = true end
 						cached += 1
-						if pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
+						if pushToHelperIndex(scriptInstance, key, cachedSource) then
+							helperIndexed += 1
+							task.wait()
+						end
 					else
 						failed += 1
 					end
 					batchCount += 1
-					if batchCount % 100 == 0 then
+					if batchCount % 10 == 0 then
 						task.wait()
 					end
 					continue
@@ -1186,10 +1196,14 @@ local function main()
 				end
 				local cachedValid, cachedSource = validateCachedSource(scriptInstance)
 				local hasValidSource = isValidDecompileSource(resultSource) or cachedValid
+				local finalSource = isValidDecompileSource(resultSource) and resultSource or cachedSource
 				if success and hasValidSource then
 					decompiled += 1
 					if key then indexedKeys[key] = true end
-					if key and pushToHelperIndex(scriptInstance, key) then helperIndexed += 1 end
+					if key and pushToHelperIndex(scriptInstance, key, finalSource) then
+						helperIndexed += 1
+						task.wait()
+					end
 				else
 					failed += 1
 					if success and not hasValidSource then
