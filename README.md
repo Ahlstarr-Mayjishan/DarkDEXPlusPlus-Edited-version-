@@ -2,6 +2,85 @@
 
 DarkDEX++ can run independently using the `DEX++_compiled.luau` file, or fetch the script via the C++ Local Helper Server at `http://localhost:8080/script`.
 
+> [!WARNING]
+> This project is developed and tested only with **Potassium on Windows**. Other executors may expose functions with the same names but different behavior, arguments, return values, thread identity, filesystem rules, or hook stability. They are not currently supported or verified. Test only in experiences you own or are authorized to inspect.
+
+## What you need
+
+For the currently tested setup:
+
+- Windows with Potassium installed;
+- Roblox and the Potassium executor running;
+- `DEX++_compiled.luau`, or the local helper serving it from `http://localhost:8080/script`;
+- Potassium HTTP access to localhost;
+- Potassium filesystem APIs if you want persistent settings, plugins, decompile cache, and exports;
+- Potassium's `Decompiler.exe` if you want the helper to proxy external decompilation.
+
+To rebuild the project from source, install:
+
+- Python 3 for `build.py` and the deep-analysis worker;
+- a C++17 compiler with Winsock support, currently `g++`;
+- Rust/Cargo for the optional high-throughput analyzer.
+
+Python and Rust are not required merely to run an already-built helper. C++ remains the fallback analyzer if a sidecar worker is unavailable.
+
+## Executor API requirements
+
+DarkDEX++ performs capability checks where possible. Missing optional APIs should disable or reduce the relevant feature instead of preventing the whole UI from opening.
+
+### Required for the core loader
+
+| API | Used for |
+| --- | --- |
+| `loadstring` | Loading the compiled bundle, downloaded modules, plugins, and console code. |
+| `game:HttpGet` | Downloading DEX++, metadata, updates, and local helper responses. |
+| `getgenv` | Shared executor environment and hook coordination. |
+
+### Required for persistent cache and local plugins
+
+| API | Used for |
+| --- | --- |
+| `isfile`, `isfolder` | Detecting settings, cache entries, dependencies, and plugin files. |
+| `readfile`, `writefile` | Loading and saving settings, source cache, exports, and dependencies. |
+| `makefolder`, `listfiles` | Creating the DEX workspace and discovering local plugins. |
+| `appendfile` | Optional incremental file logging. |
+| `loadfile` | Optional direct plugin loading; `readfile` plus `loadstring` is the fallback. |
+
+Without these functions, DEX++ can still show the live Explorer, but persistent Code Search cache, local plugins, exports, and several analysis modules will be unavailable.
+
+### Required for decompilation
+
+At least one decompile path must be available:
+
+| API | Used for |
+| --- | --- |
+| `decompile` | Native executor decompilation. |
+| `getscriptbytecode` | Extracting bytecode for the local helper or another decompiler backend. |
+| executor HTTP request API | Posting bytecode/source to `http://localhost:8080`; accepted aliases include `request`, `http_request`, `http.request`, and `syn.request`. |
+
+`getscriptbytecode` does not move script discovery or bytecode extraction outside Roblox. It only allows the extracted payload to be processed by the external helper.
+
+### Optional inspection APIs
+
+| API | Enables |
+| --- | --- |
+| `getnilinstances` or `get_nil_instances` | Nil-parented object discovery and broader indexing. |
+| `getloadedmodules` | Loaded ModuleScript discovery. |
+| `getgc` | Runtime tables/functions, Table Editor, and deeper client inspection. |
+| `getreg` | Registry/thread inspection. |
+| `debug.getconstants` or `getconstants` | Function/constants inspection and relation hints. |
+| `debug.getupvalues` or `getupvalues` | Function/upvalue inspection. |
+| `getconnections` | Signal connection inspection. |
+| `setclipboard` | Copy path, source, logs, and AI context actions. |
+| `gethui`, `protect_gui`, or `syn.protect_gui` | More reliable GUI parenting/protection. |
+| `saveinstance` | Saving selected instances or places. |
+
+### Experimental hook APIs
+
+`hookfunction`, `hookmetamethod`, `getnamecallmethod`, `checkcaller`, and `newcclosure` are used only by hook-based tools such as Remote Spy, HTTP Spy, and targeted runtime probes.
+
+These APIs are executor- and build-sensitive. Global metamethod hooks have caused Roblox freezes or crashes during testing, even when the functions exist. Keep hook-based modules disabled unless needed, avoid enabling multiple global hooks together, and restart Roblox after an unstable hook session.
+
 ## What does the Helper Server do?
 
 `HelperServer/DEX_Helper.exe` currently supports:
@@ -36,15 +115,23 @@ Important: the helper can proxy bytecode to Potassium's external `Decompiler.exe
 
 ## Quick Start
 
-1. Open `HelperServer/DEX_Helper.exe`.
-2. Open `http://localhost:8080/` for the external Helper Dashboard.
-3. In your executor, run:
+1. Build the Luau bundle with `python .\build.py`, or use the included `DEX++_compiled.luau`.
+2. Build the helper with `HelperServer\compile.bat`, or use an already-built local executable.
+3. Start `HelperServer\DEX_Helper.exe`. Leave its console open while using DEX++.
+4. Open `http://localhost:8080/` and confirm that the dashboard reports `active` and `script ready`.
+5. In Potassium, run:
 
 ```lua
 loadstring(game:HttpGet("http://localhost:8080/script"))()
 ```
 
-If your executor does not allow `game:HttpGet` requests to localhost, copy the contents of `DEX++_compiled.luau` directly into the executor.
+6. In DEX++, enable `Settings > Decompiler > Use Local Helper` when you want external indexing, search, analysis, or decompiler proxying.
+7. Open `Search Center`, choose the desired filters, and press `Index`.
+8. Watch the game name and indexing progress in the helper dashboard. Search cached source from either DEX++ or the browser dashboard.
+
+If localhost HTTP is unavailable, execute `DEX++_compiled.luau` directly. The external dashboard and helper-backed features will remain unavailable.
+
+For the smoothest first run, keep low-impact indexing enabled, leave property-change logging disabled, and do not enable the experimental hook modules together.
 
 ## Dashboard guide
 
@@ -162,6 +249,7 @@ The copied analysis is compacted into line/function/require/remote/risk counts p
 
 The helper can speed up the backend/source lifting side when `Decompiler.exe` is reachable, but it cannot remove the client-side cost of finding script instances, reading metadata, extracting bytecode, UI updates, and HTTP transfer. Cache hits are therefore the biggest win.
 
-# Support Executor
+## Supported executor
 
-- Potassium
+- **Potassium**: developed and tested.
+- Other executors: unsupported and unverified, even when they report high sUNC compatibility.
