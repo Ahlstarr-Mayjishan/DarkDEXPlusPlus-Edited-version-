@@ -7330,7 +7330,7 @@ local function main()
 							self.InputDown = false
 						end)
 
-						while self.InputDown and not Explorer.Dragging do
+						while self.InputDown and not (Explorer and Explorer.Dragging) do
 							if (tick() - self.InputDown) >= 0.4 then
 								self.InputDown = false
 								self["OnRelease"]:Fire(item, self.Combo, 2, Vector2.new(X, Y))
