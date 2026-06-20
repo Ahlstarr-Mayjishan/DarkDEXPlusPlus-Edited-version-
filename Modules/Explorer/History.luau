@@ -57,8 +57,12 @@ local function main()
 		else
 			warn("Undo failed: " .. tostring(err))
 		end
-		if Apps.Explorer and Apps.Explorer.Refresh then
-			Apps.Explorer.Refresh()
+		if Apps.Explorer then
+			if Apps.Explorer.ForceUpdate then
+				Apps.Explorer.ForceUpdate()
+			elseif Apps.Explorer.Refresh then
+				Apps.Explorer.Refresh()
+			end
 		end
 		if Apps.Properties and Apps.Properties.Update then
 			Apps.Properties.Update()
@@ -74,8 +78,12 @@ local function main()
 		else
 			warn("Redo failed: " .. tostring(err))
 		end
-		if Apps.Explorer and Apps.Explorer.Refresh then
-			Apps.Explorer.Refresh()
+		if Apps.Explorer then
+			if Apps.Explorer.ForceUpdate then
+				Apps.Explorer.ForceUpdate()
+			elseif Apps.Explorer.Refresh then
+				Apps.Explorer.Refresh()
+			end
 		end
 		if Apps.Properties and Apps.Properties.Update then
 			Apps.Properties.Update()

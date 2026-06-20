@@ -47,6 +47,9 @@ local function main()
 			local s, cloned = pcall(clone, inst)
 			if s and cloned then
 				cloned.Parent = instPar
+				if Apps.Explorer and Apps.Explorer.AddObject then
+					pcall(Apps.Explorer.AddObject, cloned)
+				end
 				table.insert(duplicatedInstances, {
 					Obj = cloned,
 					OriginalParent = instPar
@@ -63,6 +66,9 @@ local function main()
 
 		local function undo()
 			for _, item in ipairs(duplicatedInstances) do
+				if Apps.Explorer and Apps.Explorer.RemoveObject then
+					pcall(Apps.Explorer.RemoveObject, item.Obj)
+				end
 				pcall(function() item.Obj.Parent = nil end)
 			end
 			if selection and selection.Clear then
@@ -73,6 +79,9 @@ local function main()
 		local function redo()
 			for _, item in ipairs(duplicatedInstances) do
 				pcall(function() item.Obj.Parent = item.OriginalParent end)
+				if Apps.Explorer and Apps.Explorer.AddObject then
+					pcall(Apps.Explorer.AddObject, item.Obj)
+				end
 			end
 			local nodesToSelect = {}
 			for _, item in ipairs(duplicatedInstances) do

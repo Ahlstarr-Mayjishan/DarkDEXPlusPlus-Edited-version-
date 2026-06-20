@@ -18,7 +18,7 @@ local function main()
 		local nodes = data.nodes
 		local Explorer = data.Explorer
 
-		context:Register("CUT",{Name = "Cut", IconMap = Explorer.MiscIcons, Icon = "Cut", DisabledIcon = "Cut_Disabled", Shortcut = "Ctrl+Z", OnClick = function()
+		context:Register("CUT",{Name = "Cut", IconMap = Explorer.MiscIcons, Icon = "Cut", DisabledIcon = "Cut_Disabled", Shortcut = "Ctrl+X", OnClick = function()
 			if Apps.Clipboard then
 				Apps.Clipboard.Cut(selection.List, selection)
 			end
@@ -58,6 +58,18 @@ local function main()
 		context:Register("RENAME",{Name = "Rename", IconMap = Explorer.MiscIcons, Icon = "Rename", DisabledIcon = "Rename_Disabled", Shortcut = "F2", OnClick = function()
 			if Apps.Rename then
 				Apps.Rename.Execute(selection.List, Explorer.SetRenamingNode)
+			end
+		end})
+
+		context:Register("UNDO",{Name = "Undo", IconMap = Explorer.MiscIcons, Icon = "Undo", DisabledIcon = "Undo_Disabled", Shortcut = "Ctrl+Z", OnClick = function()
+			if Apps.History then
+				Apps.History.Undo()
+			end
+		end})
+
+		context:Register("REDO",{Name = "Redo", IconMap = Explorer.MiscIcons, Icon = "Redo", DisabledIcon = "Redo_Disabled", Shortcut = "Ctrl+Y", OnClick = function()
+			if Apps.History then
+				Apps.History.Redo()
 			end
 		end})
 	end

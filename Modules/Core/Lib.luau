@@ -89,6 +89,27 @@ local function main()
 
 	Lib.CheckMouseInGui = function(gui)
 		if gui == nil then return false end
+		
+		-- Support SurfaceGui coordinates by raycasting to the Adornee part
+		local surfaceGui = gui:FindFirstAncestorOfClass("SurfaceGui")
+		if surfaceGui then
+			local part = surfaceGui.Adornee or surfaceGui.Parent
+			if part and part:IsA("BasePart") then
+				local camera = workspace.CurrentCamera
+				local pos = service.UserInputService:GetMouseLocation()
+				local mouseRay = camera:ViewportPointToRay(pos.X, pos.Y)
+				local params = RaycastParams.new()
+				params.FilterType = Enum.RaycastFilterType.Include
+				params.FilterDescendantsInstances = {part}
+				params.IgnoreWater = true
+				local result = workspace:Raycast(mouseRay.Origin, mouseRay.Direction * 1000, params)
+				if result then
+					return true
+				end
+			end
+			return false
+		end
+
 		local mouse = Main.Mouse
 		local guiPosition = gui.AbsolutePosition
 		local guiSize = gui.AbsoluteSize	
@@ -3650,8 +3671,20 @@ local function main()
 				local text = self.QueuedDividerText and #self.QueuedDividerText > 0 and self.QueuedDividerText
 				self:AddDivider(text)
 			end
-			self.Registered[name].Disabled = disabled
-			self.Items[#self.Items+1] = self.Registered[name]
+			local original = self.Registered[name]
+			local item = {
+				Name = original.Name,
+				Icon = original.Icon,
+				Shortcut = original.Shortcut,
+				OnClick = original.OnClick,
+				OnHover = original.OnHover,
+				Disabled = (disabled ~= nil) and disabled or original.Disabled,
+				DisabledIcon = original.DisabledIcon,
+				IconMap = original.IconMap,
+				OnRightClick = original.OnRightClick,
+				NoHide = original.NoHide
+			}
+			self.Items[#self.Items+1] = item
 			self.Updated = nil
 		end
 
@@ -3803,6 +3836,8 @@ local function main()
 		end
 
 		funcs.Show = function(self,x,y)
+			self:Hide(true)
+
 			local elems = self.GuiElems
 			elems.SearchFrame.Visible = self.SearchEnabled
 			elems.List.Position = UDim2.new(0,2,0,2 + (self.SearchEnabled and 24 or 0))
@@ -3868,8 +3903,388 @@ local function main()
 			closable = true
 		end
 
-		funcs.Hide = function(self)
-			self.Gui.Parent = nil
+		local active3DPanels = {}
+
+		Lib.ClearAll3DPanels = function()
+			for i = #active3DPanels, 1, -1 do
+				local panel = table.remove(active3DPanels, i)
+				if panel then
+					panel:Hide(true)
+				end
+			end
+		end
+
+		Lib.GetActive3DPanels = function()
+			return active3DPanels
+		end
+
+		funcs.Hide = function(self, immediate)
+			if self.RenderConnection then
+				self.RenderConnection:Disconnect()
+				self.RenderConnection = nil
+			end
+			if self.CloseEvent then
+				self.CloseEvent:Disconnect()
+				self.CloseEvent = nil
+			end
+			local uiScale = self.GuiElems.Main:FindFirstChildOfClass("UIScale")
+
+			-- Get back face scale if it exists
+			local backScale
+			if self.BillboardGuiBack then
+				local backFrame = self.BillboardGuiBack:FindFirstChildOfClass("Frame")
+				backScale = backFrame and backFrame:FindFirstChildOfClass("UIScale")
+			end
+
+			local function cleanup()
+				if uiScale then
+					uiScale:Destroy()
+				end
+				
+				-- Critical: Reparent elems.Main to self.Gui BEFORE destroying BillboardGui/BillboardAdornee.
+				-- If BillboardGui is destroyed first, Roblox recursively destroys elems.Main, locking its Parent property.
+				self.GuiElems.Main.Parent = self.Gui
+
+				if self.BillboardGui then
+					self.BillboardGui:Destroy()
+					self.BillboardGui = nil
+				end
+				if self.BillboardGuiBack then
+					self.BillboardGuiBack:Destroy()
+					self.BillboardGuiBack = nil
+				end
+				if self.BillboardAdornee then
+					self.BillboardAdornee:Destroy()
+					self.BillboardAdornee = nil
+				end
+				self.TargetInstance = nil
+				self.Gui.Parent = nil
+				self.Hiding = nil
+
+				-- Remove from active3DPanels
+				for i = #active3DPanels, 1, -1 do
+					if active3DPanels[i] == self then
+						table.remove(active3DPanels, i)
+					end
+				end
+			end
+
+			if immediate or not uiScale or not self.BillboardGui then
+				cleanup()
+			else
+				self.Hiding = true
+				-- Play closing scale-down animation in unison for both front and back
+				local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+				local tween = service.TweenService:Create(uiScale, tweenInfo, {Scale = 0.01})
+				
+				if backScale then
+					local backTween = service.TweenService:Create(backScale, tweenInfo, {Scale = 0.01})
+					backTween:Play()
+				end
+
+				local conn
+				conn = tween.Completed:Connect(function()
+					conn:Disconnect()
+					if self.Hiding then
+						cleanup()
+					end
+				end)
+				tween:Play()
+			end
+		end
+
+		funcs.Show3D = function(self, targetInstance, hitPosition)
+			self:Hide(true)
+
+			local elems = self.GuiElems
+			elems.SearchFrame.Visible = self.SearchEnabled
+			elems.List.Position = UDim2.new(0,2,0,2 + (self.SearchEnabled and 24 or 0))
+			elems.List.Size = UDim2.new(1,-4,1,-4 - (self.SearchEnabled and 24 or 0))
+			if self.SearchEnabled and self.ClearSearchOnShow then elems.SearchBar.Text = "" end
+			self.GuiElems.List.CanvasPosition = Vector2.new(0,0)
+
+			if not self.Updated then
+				self:Refresh()
+			end
+
+			if not targetInstance or not targetInstance:IsA("BasePart") then
+				self:Show()
+				return
+			end
+
+			local toSize = elems.List.UIListLayout.AbsoluteContentSize.Y + 6
+			if self.MaxHeight and toSize > self.MaxHeight then
+				elems.List.CanvasSize = UDim2.new(0,0,0,toSize-6)
+				toSize = self.MaxHeight
+			else
+				elems.List.CanvasSize = UDim2.new(0,0,0,0)
+			end
+
+			local camera = workspace.CurrentCamera
+			local cameraPos = camera.CFrame.Position
+
+			-- Calculate 3D physical size for true perspective (maintaining 1:1 aspect ratio)
+			local partWidth = 7
+			local partHeight = partWidth * (toSize / self.Width)
+
+			-- Visibility and obstruction check logic
+			local toCamera = (cameraPos - hitPosition).Magnitude > 0.001 and (cameraPos - hitPosition).Unit or Vector3.new(0, 1, 0)
+			local basePos = hitPosition + toCamera * 1.5
+
+			-- Helper to raycast ignoring triggers/invisible parts/character
+			local function isObscured(startPos, endPos)
+				local filter = {service.Players.LocalPlayer.Character}
+				for _, panel in ipairs(active3DPanels) do
+					if panel.BillboardAdornee then
+						table.insert(filter, panel.BillboardAdornee)
+					end
+				end
+
+				local params = RaycastParams.new()
+				params.FilterType = Enum.RaycastFilterType.Exclude
+				
+				while true do
+					params.FilterDescendantsInstances = filter
+					local result = workspace:Raycast(startPos, endPos - startPos, params)
+					if not result then
+						return nil
+					end
+					
+					local hitPart = result.Instance
+					local isVisualObstacle = hitPart.Transparency < 0.95
+					if isVisualObstacle then
+						return result
+					else
+						table.insert(filter, hitPart)
+					end
+				end
+			end
+
+			-- Calculate base orientation CFrame
+			local lookTarget = Vector3.new(cameraPos.X, basePos.Y, cameraPos.Z)
+			local baseCFrame
+			if (lookTarget - basePos).Magnitude > 0.01 then
+				baseCFrame = CFrame.lookAt(basePos, lookTarget)
+			else
+				baseCFrame = CFrame.lookAt(basePos, cameraPos)
+			end
+
+			-- Test center and 4 corners of the UI plane
+			local halfW = partWidth / 2
+			local halfH = partHeight / 2
+			local testOffsets = {
+				Vector3.new(0, 0, 0), -- Center
+				Vector3.new(-halfW, halfH, 0), -- Top-Left
+				Vector3.new(halfW, halfH, 0), -- Top-Right
+				Vector3.new(-halfW, -halfH, 0), -- Bottom-Left
+				Vector3.new(halfW, -halfH, 0) -- Bottom-Right
+			}
+
+			local maxAdjustment = 0
+			for _, offset in ipairs(testOffsets) do
+				local P = baseCFrame:PointToWorldSpace(offset)
+				local result = isObscured(cameraPos, P)
+				if result then
+					local distToObstruction = (result.Position - cameraPos).Magnitude
+					local distToPoint = (P - cameraPos).Magnitude
+					if distToObstruction < distToPoint - 0.1 then
+						local needed = (distToPoint - distToObstruction) + 0.5 -- 0.5 studs padding
+						if needed > maxAdjustment then
+							maxAdjustment = needed
+						end
+					end
+				end
+			end
+
+			-- Apply the adjustment to position the UI in front of all obstructions
+			local finalPos = basePos
+			if maxAdjustment > 0 then
+				local maxSafeDistance = (cameraPos - basePos).Magnitude - 3.0
+				local adjustment = math.min(maxAdjustment, math.max(0, maxSafeDistance))
+				finalPos = basePos + toCamera * adjustment
+			end
+
+			-- Create static anchored invisible part at finalPos
+			local spatialPart = Instance.new("Part")
+			spatialPart.Name = "_DPP_SpatialPart"
+			spatialPart.Size = Vector3.new(partWidth, partHeight, 0.2)
+			
+			-- Orient to face the camera position (locking pitch rotation creates a cleaner spatial UI)
+			local lookTargetFinal = Vector3.new(cameraPos.X, finalPos.Y, cameraPos.Z)
+			if (lookTargetFinal - finalPos).Magnitude > 0.01 then
+				spatialPart.CFrame = CFrame.lookAt(finalPos, lookTargetFinal)
+			else
+				spatialPart.CFrame = CFrame.lookAt(finalPos, cameraPos)
+			end
+
+			spatialPart.Transparency = 1
+			spatialPart.CanCollide = false
+			spatialPart.CanTouch = false
+			spatialPart.CanQuery = true
+			spatialPart.Anchored = true
+			spatialPart.Parent = workspace
+			self.BillboardAdornee = spatialPart
+			self.TargetInstance = targetInstance
+
+			-- SurfaceGui for Front Face (Interactive menu)
+			local surfaceGui = Instance.new("SurfaceGui")
+			surfaceGui.Adornee = spatialPart
+			surfaceGui.Face = Enum.NormalId.Front
+			surfaceGui.AlwaysOnTop = false
+			surfaceGui.LightInfluence = 0
+			surfaceGui.ClipsDescendants = false
+			surfaceGui.CanvasSize = Vector2.new(self.Width, toSize)
+			surfaceGui.Name = "_DPP_SurfaceGui"
+			surfaceGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+			elems.Main.Parent = surfaceGui
+			elems.Main.ClipsDescendants = false
+			elems.Main.Size = UDim2.new(1, 0, 1, 0)
+			elems.Main.Position = UDim2.new(0, 0, 0, 0)
+
+			local uiScale = elems.Main:FindFirstChildOfClass("UIScale")
+			if not uiScale then
+				uiScale = Instance.new("UIScale")
+				uiScale.Parent = elems.Main
+			end
+			uiScale.Scale = 0.01
+
+			self.BillboardGui = surfaceGui
+			Lib.ShowGui(surfaceGui)
+
+			-- SurfaceGui for Back Face (Sleek Glass Backing)
+			local backGui = Instance.new("SurfaceGui")
+			backGui.Adornee = spatialPart
+			backGui.Face = Enum.NormalId.Back
+			backGui.AlwaysOnTop = false
+			backGui.LightInfluence = 0
+			backGui.ClipsDescendants = false
+			backGui.CanvasSize = Vector2.new(self.Width, toSize)
+			backGui.Name = "_DPP_BackGui"
+			backGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+			local backFrame = Instance.new("Frame")
+			backFrame.Size = UDim2.new(1, 0, 1, 0)
+			backFrame.BackgroundColor3 = elems.Main.BackgroundColor3 or Color3.fromRGB(30, 30, 30)
+			backFrame.BackgroundTransparency = 0.45
+			backFrame.BorderSizePixel = 0
+			backFrame.Parent = backGui
+
+			local backCorner = Instance.new("UICorner")
+			backCorner.CornerRadius = UDim.new(0, 8)
+			backCorner.Parent = backFrame
+
+			local backStroke = Instance.new("UIStroke")
+			backStroke.Color = Color3.fromRGB(80, 80, 80)
+			backStroke.Thickness = 1.5
+			backStroke.Transparency = 0.5
+			backStroke.Parent = backFrame
+
+			local backLabel = Instance.new("TextLabel")
+			backLabel.Size = UDim2.new(1, 0, 1, 0)
+			backLabel.BackgroundTransparency = 1
+			backLabel.Text = "DEX++"
+			backLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+			backLabel.TextTransparency = 0.6
+			backLabel.TextSize = 24
+			backLabel.Font = Enum.Font.GothamBold
+			backLabel.Parent = backFrame
+
+			local backScale = Instance.new("UIScale")
+			backScale.Parent = backFrame
+			backScale.Scale = 0.01
+
+			self.BillboardGuiBack = backGui
+			Lib.ShowGui(backGui)
+
+			-- Enforce maximum panel limit (FIFO)
+			if not table.find(active3DPanels, self) then
+				table.insert(active3DPanels, self)
+			end
+			local maxPanels = Settings.Explorer.ViewportContextMenuMaxPanels or 10
+			if maxPanels > 0 then
+				while #active3DPanels > maxPanels do
+					local oldest = table.remove(active3DPanels, 1)
+					if oldest then
+						oldest:Hide(true)
+					end
+				end
+			end
+
+			-- Opening Animation (Scale up smoothly in unison with a subtle bounce)
+			local openTween = service.TweenService:Create(uiScale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.0})
+			openTween:Play()
+
+			local backOpenTween = service.TweenService:Create(backScale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.0})
+			backOpenTween:Play()
+
+			local closable = false
+			if self.CloseEvent then self.CloseEvent:Disconnect() end
+			self.CloseEvent = service.UserInputService.InputBegan:Connect(function(input)
+				if not closable then return end
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					local overDex = false
+					local isOverDexGui = (Explorer and Explorer.isOverDexGui) or (Apps and Apps.Explorer and Apps.Explorer.isOverDexGui)
+					if isOverDexGui and isOverDexGui() then
+						overDex = true
+					else
+						for _, panel in ipairs(active3DPanels) do
+							if panel.GuiElems and panel.GuiElems.Main then
+								if Lib.CheckMouseInGui(panel.GuiElems.Main) then
+									overDex = true
+									break
+								end
+							end
+						end
+					end
+
+					if not overDex then
+						self:Hide()
+					end
+				end
+			end)
+
+			local outsideSince = nil
+			self.RenderConnection = service.RunService.RenderStepped:Connect(function()
+				if not spatialPart or not spatialPart.Parent then
+					self:Hide(true)
+					return
+				end
+
+				-- Check distance using the CAMERA position instead of Character
+				local refCamera = workspace.CurrentCamera
+				local referencePos = refCamera.CFrame.Position
+				local distance = (spatialPart.Position - referencePos).Magnitude
+
+				-- Check max distance limit
+				local maxDistance = Settings.Explorer.ViewportContextMenuMaxDistance or 50
+				local isOutside = false
+				if maxDistance > 0 and distance > maxDistance then
+					isOutside = true
+				end
+
+				if isOutside then
+					local closeDelay = Settings.Explorer.ViewportContextMenuDistanceCloseTime or 10
+					if closeDelay == 0 then
+						outsideSince = nil -- Reset if configured to stay open permanently
+					else
+						if not outsideSince then
+							outsideSince = os.clock()
+						else
+							local elapsed = os.clock() - outsideSince
+							if elapsed >= closeDelay then
+								self:Hide()
+								return
+							end
+						end
+					end
+				else
+					outsideSince = nil -- Returned within boundaries: cancel countdown timer
+				end
+			end)
+
+			Lib.FastWait()
+			closable = true
 		end
 
 		funcs.ApplyTheme = function(self,data)

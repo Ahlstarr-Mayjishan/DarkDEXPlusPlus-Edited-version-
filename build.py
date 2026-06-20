@@ -29,7 +29,7 @@ def build():
         ],
         "Explorer": [
             "Explorer", "EditMenu", "NavigationMenu", "ObjectMenu", "ScriptMenu", "InteractionMenu", "PlayerMenu", "NilInstanceMenu", "Properties", "SaveInstance", "ObjectLinks", "InstanceSerializer",
-            "Clipboard", "Duplicate", "Deletion", "PropertyCopier", "PropertyRestorer", "Rename",
+            "Clipboard", "Duplicate", "Deletion", "PropertyCopier", "PropertyRestorer", "Rename", "History",
         ],
         "Roblox Assets Viewer": [
             "ModelViewer", "ImageViewer", "SoundViewer", "AnimationViewer",

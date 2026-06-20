@@ -368,10 +368,14 @@ local function main()
 			if oldName ~= newName then
 				local function undo()
 					pcall(function() instance.Name = oldName end)
+					local node = nodes[instance]
+					if node then node.NameWidth = nil end
 				end
 
 				local function redo()
 					pcall(function() instance.Name = newName end)
+					local node = nodes[instance]
+					if node then node.NameWidth = nil end
 				end
 
 				redo()
@@ -969,6 +973,18 @@ local function main()
 		if not norefresh then Explorer.Refresh() end
 	end
 
+	Explorer.AddObject = function(obj)
+		return withExplorerAccess(addObject, obj)
+	end
+
+	Explorer.RemoveObject = function(obj)
+		return withExplorerAccess(removeObject, obj)
+	end
+
+	Explorer.MoveObject = function(obj)
+		return withExplorerAccess(moveObject, obj)
+	end
+
 	Explorer.PerformRefresh = function()
 		refreshDebounce = true
 		Lib.FastWait(0.1)
@@ -1012,21 +1028,13 @@ local function main()
 		descendantAddedCon = Main.RegisterConnection(game.DescendantAdded:Connect(safeCallback(addObject)))
 		descendantRemovingCon = Main.RegisterConnection(game.DescendantRemoving:Connect(safeCallback(removeObject)))
 
-		if Settings.Explorer.UseNameWidth then
-			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
-				if prop == "Parent" and nodes[obj] then
-					moveObject(obj)
-				elseif prop == "Name" and nodes[obj] then
-					nodes[obj].NameWidth = nil
-				end
-			end)))
-		else
-			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
-				if prop == "Parent" and nodes[obj] then
-					moveObject(obj)
-				end
-			end)))
-		end
+		itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
+			if prop == "Parent" and nodes[obj] then
+				moveObject(obj)
+			elseif prop == "Name" and nodes[obj] then
+				nodes[obj].NameWidth = nil
+			end
+		end)))
 	end
 
 	Explorer.Uninit = function()
@@ -1091,12 +1099,120 @@ local function main()
 		end
 	end
 
-	Explorer.ShowRightClick = function(MousePos)
+	Explorer.ShowRightClick = function(MousePos, Show3DTarget, Show3DHitPosition)
 		local Mouse = MousePos or Main.Mouse
-		local context = Explorer.RightClickContext
+		
+		local context
+		local isCtrlDown = Lib.IsCtrlDown()
+
+		if Show3DTarget then
+			local camera = workspace.CurrentCamera
+			local cameraPos = camera and camera.CFrame.Position
+			local targetPos = Show3DHitPosition or (Show3DTarget:IsA("BasePart") and Show3DTarget.Position)
+			
+			local fallbackDistance = Settings.Explorer.ViewportContextMenu2DFallbackDistance or 50
+			if fallbackDistance > 0 and cameraPos and targetPos then
+				local distance = (cameraPos - targetPos).Magnitude
+				if distance > fallbackDistance then
+					Show3DTarget = nil
+				end
+			end
+		end
+
+		if Show3DTarget then
+			-- Ensure each part/mesh can only open a single unique UI
+			for _, panel in ipairs(Lib.GetActive3DPanels()) do
+				if panel.TargetInstance == Show3DTarget then
+					return
+				end
+			end
+
+			if not isCtrlDown then
+				Lib.ClearAll3DPanels()
+			end
+			context = Lib.ContextMenu.new()
+			local targetNode = nodes[Show3DTarget]
+			for k, v in next, Explorer.RightClickContext.Registered do
+				local originalOnClick = v.OnClick
+				local originalOnRightClick = v.OnRightClick
+
+				context.Registered[k] = {
+					Name = v.Name,
+					Icon = v.Icon,
+					Shortcut = v.Shortcut,
+					IconMap = v.IconMap,
+					DisabledIcon = v.DisabledIcon,
+					NoHide = v.NoHide,
+					OnClick = originalOnClick and function(name)
+						if targetNode then
+							selection:Set(targetNode)
+							Explorer.Refresh()
+						end
+						originalOnClick(name)
+					end or nil,
+					OnHover = v.OnHover,
+					OnRightClick = originalOnRightClick and function(name)
+						if targetNode then
+							selection:Set(targetNode)
+							Explorer.Refresh()
+						end
+						originalOnRightClick(name)
+					end or nil
+				}
+			end
+			context:ApplyTheme({
+				ContentColor = Settings.Theme.Menu,
+				OutlineColor = Settings.Theme.Menu,
+				DividerColor = Settings.Theme.Outline2,
+				TextColor = Settings.Theme.Text,
+				HighlightColor = Settings.Theme.Main1
+			})
+		else
+			Lib.ClearAll3DPanels()
+			context = Explorer.RightClickContext
+		end
+
 		local absoluteSize = context.Gui.AbsoluteSize
-		context.MaxHeight = (absoluteSize.Y <= 600 and (absoluteSize.Y - 40)) or nil
+		if Show3DTarget then
+			context.MaxHeight = 600
+		else
+			context.MaxHeight = (absoluteSize.Y > 40 and absoluteSize.Y <= 600 and (absoluteSize.Y - 40)) or nil
+		end
 		context:Clear()
+
+		if Show3DTarget then
+			local parentObj = Show3DTarget.Parent
+			if parentObj and parentObj ~= workspace and parentObj ~= game then
+				context:Add({
+					Name = "Select Parent (" .. parentObj.Name .. ")",
+					IconMap = Explorer.MiscIcons,
+					Icon = "JumpToParent",
+					OnClick = function()
+						local parentNode = nodes[parentObj]
+						if parentNode then
+							selection:Set(parentNode)
+							Explorer.ViewNode(parentNode)
+							Explorer.Refresh()
+						end
+					end
+				})
+				context:AddDivider()
+			end
+
+			context:Add({
+				Name = "Focus in Explorer",
+				IconMap = Explorer.MiscIcons,
+				Icon = "ExploreData",
+				OnClick = function()
+					local node = nodes[Show3DTarget]
+					if node then
+						Explorer.ViewNode(node)
+						Explorer.Refresh()
+					end
+				end
+			})
+			context:AddDivider()
+		end
 
 		local sList = selection.List
 		local sMap = selection.Map
@@ -1241,7 +1357,12 @@ local function main()
 		end
 
 		Explorer.LastRightClickX, Explorer.LastRightClickY = Mouse.X, Mouse.Y
-		context:Show(Mouse.X, Mouse.Y)
+		if Show3DTarget then
+			local targetPos = Show3DHitPosition or (Show3DTarget:IsA("BasePart") and Show3DTarget.Position) or workspace.CurrentCamera.CFrame.Position
+			context:Show3D(Show3DTarget, targetPos)
+		else
+			context:Show(Mouse.X, Mouse.Y)
+		end
 	end
 
 	Explorer.InitRightClick = function()
@@ -2278,17 +2399,17 @@ return search]==]
 			local pos = service.UserInputService:GetMouseLocation()
 
 			local function isDexGuiObject(obj)
-				local screenGui = obj:FindFirstAncestorOfClass("ScreenGui")
-				if not screenGui then return false end
+				local gui = obj:FindFirstAncestorOfClass("ScreenGui") or obj:FindFirstAncestorOfClass("SurfaceGui")
+				if not gui then return false end
 
-				local name = screenGui.Name
+				local name = gui.Name
 				if string.sub(name, 1, 5) == "_DPP_" then
 					return true
 				end
 
 				if gethui then
 					local success, hui = pcall(gethui)
-					if success and hui and (hui ~= service.CoreGui) and screenGui:IsDescendantOf(hui) then
+					if success and hui and (hui ~= service.CoreGui) and gui:IsDescendantOf(hui) then
 						return true
 					end
 				end
@@ -2350,8 +2471,8 @@ return search]==]
 					if getDescendantsSuccess and list then
 						for _, obj in ipairs(list) do
 							if obj:IsA("GuiObject") and obj.AbsoluteSize.X > 0 and obj.AbsoluteSize.Y > 0 then
-								local screenGui = obj:FindFirstAncestorOfClass("ScreenGui")
-								if screenGui and screenGui.Enabled then
+								local gui = obj:FindFirstAncestorOfClass("ScreenGui") or obj:FindFirstAncestorOfClass("SurfaceGui")
+								if gui and gui.Enabled then
 									local absPos = obj.AbsolutePosition
 									local absSize = obj.AbsoluteSize
 									if pos.X >= absPos.X and pos.X < absPos.X + absSize.X and
@@ -2362,6 +2483,23 @@ return search]==]
 									end
 								end
 							end
+						end
+					end
+				end
+			end
+
+			if Lib and Lib.GetActive3DPanels then
+				for _, panel in ipairs(Lib.GetActive3DPanels()) do
+					if panel.BillboardAdornee and panel.BillboardAdornee.Parent then
+						local camera = workspace.CurrentCamera
+						local mouseRay = camera:ViewportPointToRay(pos.X, pos.Y)
+						local params = RaycastParams.new()
+						params.FilterType = Enum.RaycastFilterType.Include
+						params.FilterDescendantsInstances = {panel.BillboardAdornee}
+						params.IgnoreWater = true
+						local result = workspace:Raycast(mouseRay.Origin, mouseRay.Direction * 1000, params)
+						if result then
+							return true
 						end
 					end
 				end
@@ -2403,7 +2541,7 @@ return search]==]
 						Explorer.ViewNode(targetNode)
 						Explorer.Refresh()
 
-						Explorer.ShowViewportRightClick(position, targetNode.Obj)
+						Explorer.ShowViewportRightClick(position, targetNode.Obj, mouse.Hit.Position)
 					end
 				end
 			end
@@ -2437,7 +2575,7 @@ return search]==]
 					elseif triggerType == "Right Click" then
 						local duration = os.clock() - clickStartTime
 						local delta = (input.Position - clickStartPos).Magnitude
-						if duration < 0.25 and delta < 10 then
+						if duration < 0.8 and delta < 30 then
 							triggerSelect(input.Position)
 						end
 					end
@@ -2445,60 +2583,8 @@ return search]==]
 			end)
 		end
 
-		Explorer.ShowViewportRightClick = function(MousePos, targetObj)
-			local Mouse = MousePos or Main.Mouse
-			local context = Explorer.RightClickContext
-			local absoluteSize = context.Gui.AbsoluteSize
-			context.MaxHeight = (absoluteSize.Y <= 600 and (absoluteSize.Y - 40)) or nil
-			context:Clear()
-
-			local sList = selection.List
-			local sMap = selection.Map
-
-			local parentObj = targetObj.Parent
-			if parentObj and parentObj ~= workspace and parentObj ~= game then
-				context:Add({
-					Name = "Select Parent (" .. parentObj.Name .. ")",
-					IconMap = Explorer.MiscIcons,
-					Icon = "JumpToParent",
-					OnClick = function()
-						local parentNode = nodes[parentObj]
-						if parentNode then
-							selection:Set(parentNode)
-							Explorer.ViewNode(parentNode)
-							Explorer.Refresh()
-						end
-					end
-				})
-				context:AddDivider()
-			end
-
-			context:Add({
-				Name = "Focus in Explorer",
-				IconMap = Explorer.MiscIcons,
-				Icon = "ExploreData",
-				OnClick = function()
-					local node = nodes[targetObj]
-					if node then
-						Explorer.ViewNode(node)
-						Explorer.Refresh()
-					end
-				end
-			})
-
-			context:AddRegistered("COPY_PATH")
-
-			context:AddDivider("Tools")
-			context:AddRegistered("3DVIEW_MODEL")
-			context:AddRegistered("COPY_PROPERTIES")
-			context:AddRegistered("PASTE_PROPERTIES", not Apps.PropertyCopier or not Apps.PropertyCopier.HasCache())
-			context:AddRegistered("RESTORE_PROPERTIES", not Apps.PropertyRestorer or not Apps.PropertyRestorer.HasBackup(targetObj))
-
-			context:AddDivider("Actions")
-			context:AddRegistered("DELETE")
-
-			Explorer.LastRightClickX, Explorer.LastRightClickY = Mouse.X, Mouse.Y
-			context:Show(Mouse.X, Mouse.Y)
+		Explorer.ShowViewportRightClick = function(MousePos, targetObj, hitPosition)
+			Explorer.ShowRightClick(MousePos, targetObj, hitPosition)
 		end
 
 		-- Settings

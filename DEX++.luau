@@ -72,7 +72,11 @@ DefaultSettings = (function()
 			GuiSelectionBox = true,
 			CopyPathUseGetChildren = true,
 			ViewportContextMenuEnabled = true,
-			ViewportContextMenuTrigger = "Middle Click"
+			ViewportContextMenuTrigger = "Middle Click",
+			ViewportContextMenuMaxPanels = 10,
+			ViewportContextMenuDistanceCloseTime = 10,
+			ViewportContextMenuMaxDistance = 50,
+			ViewportContextMenu2DFallbackDistance = 50
 		},
 		Properties = {
 			_Recurse = true,
@@ -513,7 +517,7 @@ Main = (function()
 		end
 	end
 
-	Main.ModuleList = {"Theme","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename"}
+	Main.ModuleList = {"Theme","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
 	Main.ModulePathMap = {
 		Theme = "Core/Theme",
 		Lib = "Core/Lib",
@@ -2283,9 +2287,16 @@ Main = (function()
 				end
 
 				local deserializedData = recur(decoded)
-				for k, v in pairs(deserializedData) do
-					Settings[k] = v
+				local function merge(target, source)
+					for k, v in pairs(source) do
+						if type(v) == "table" and type(target[k]) == "table" then
+							merge(target[k], v)
+						else
+							target[k] = v
+						end
+					end
 				end
+				merge(Settings, deserializedData)
 				applyModernThemeDefaults()
 			else
 				warn("failed to decode settings json")

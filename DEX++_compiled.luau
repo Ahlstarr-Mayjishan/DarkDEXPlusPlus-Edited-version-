@@ -302,6 +302,27 @@ end,
     
     	Lib.CheckMouseInGui = function(gui)
     		if gui == nil then return false end
+    		
+    		-- Support SurfaceGui coordinates by raycasting to the Adornee part
+    		local surfaceGui = gui:FindFirstAncestorOfClass("SurfaceGui")
+    		if surfaceGui then
+    			local part = surfaceGui.Adornee or surfaceGui.Parent
+    			if part and part:IsA("BasePart") then
+    				local camera = workspace.CurrentCamera
+    				local pos = service.UserInputService:GetMouseLocation()
+    				local mouseRay = camera:ViewportPointToRay(pos.X, pos.Y)
+    				local params = RaycastParams.new()
+    				params.FilterType = Enum.RaycastFilterType.Include
+    				params.FilterDescendantsInstances = {part}
+    				params.IgnoreWater = true
+    				local result = workspace:Raycast(mouseRay.Origin, mouseRay.Direction * 1000, params)
+    				if result then
+    					return true
+    				end
+    			end
+    			return false
+    		end
+    
     		local mouse = Main.Mouse
     		local guiPosition = gui.AbsolutePosition
     		local guiSize = gui.AbsoluteSize	
@@ -3863,8 +3884,20 @@ end,
     				local text = self.QueuedDividerText and #self.QueuedDividerText > 0 and self.QueuedDividerText
     				self:AddDivider(text)
     			end
-    			self.Registered[name].Disabled = disabled
-    			self.Items[#self.Items+1] = self.Registered[name]
+    			local original = self.Registered[name]
+    			local item = {
+    				Name = original.Name,
+    				Icon = original.Icon,
+    				Shortcut = original.Shortcut,
+    				OnClick = original.OnClick,
+    				OnHover = original.OnHover,
+    				Disabled = (disabled ~= nil) and disabled or original.Disabled,
+    				DisabledIcon = original.DisabledIcon,
+    				IconMap = original.IconMap,
+    				OnRightClick = original.OnRightClick,
+    				NoHide = original.NoHide
+    			}
+    			self.Items[#self.Items+1] = item
     			self.Updated = nil
     		end
     
@@ -4016,6 +4049,8 @@ end,
     		end
     
     		funcs.Show = function(self,x,y)
+    			self:Hide(true)
+    
     			local elems = self.GuiElems
     			elems.SearchFrame.Visible = self.SearchEnabled
     			elems.List.Position = UDim2.new(0,2,0,2 + (self.SearchEnabled and 24 or 0))
@@ -4081,8 +4116,388 @@ end,
     			closable = true
     		end
     
-    		funcs.Hide = function(self)
-    			self.Gui.Parent = nil
+    		local active3DPanels = {}
+    
+    		Lib.ClearAll3DPanels = function()
+    			for i = #active3DPanels, 1, -1 do
+    				local panel = table.remove(active3DPanels, i)
+    				if panel then
+    					panel:Hide(true)
+    				end
+    			end
+    		end
+    
+    		Lib.GetActive3DPanels = function()
+    			return active3DPanels
+    		end
+    
+    		funcs.Hide = function(self, immediate)
+    			if self.RenderConnection then
+    				self.RenderConnection:Disconnect()
+    				self.RenderConnection = nil
+    			end
+    			if self.CloseEvent then
+    				self.CloseEvent:Disconnect()
+    				self.CloseEvent = nil
+    			end
+    			local uiScale = self.GuiElems.Main:FindFirstChildOfClass("UIScale")
+    
+    			-- Get back face scale if it exists
+    			local backScale
+    			if self.BillboardGuiBack then
+    				local backFrame = self.BillboardGuiBack:FindFirstChildOfClass("Frame")
+    				backScale = backFrame and backFrame:FindFirstChildOfClass("UIScale")
+    			end
+    
+    			local function cleanup()
+    				if uiScale then
+    					uiScale:Destroy()
+    				end
+    				
+    				-- Critical: Reparent elems.Main to self.Gui BEFORE destroying BillboardGui/BillboardAdornee.
+    				-- If BillboardGui is destroyed first, Roblox recursively destroys elems.Main, locking its Parent property.
+    				self.GuiElems.Main.Parent = self.Gui
+    
+    				if self.BillboardGui then
+    					self.BillboardGui:Destroy()
+    					self.BillboardGui = nil
+    				end
+    				if self.BillboardGuiBack then
+    					self.BillboardGuiBack:Destroy()
+    					self.BillboardGuiBack = nil
+    				end
+    				if self.BillboardAdornee then
+    					self.BillboardAdornee:Destroy()
+    					self.BillboardAdornee = nil
+    				end
+    				self.TargetInstance = nil
+    				self.Gui.Parent = nil
+    				self.Hiding = nil
+    
+    				-- Remove from active3DPanels
+    				for i = #active3DPanels, 1, -1 do
+    					if active3DPanels[i] == self then
+    						table.remove(active3DPanels, i)
+    					end
+    				end
+    			end
+    
+    			if immediate or not uiScale or not self.BillboardGui then
+    				cleanup()
+    			else
+    				self.Hiding = true
+    				-- Play closing scale-down animation in unison for both front and back
+    				local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    				local tween = service.TweenService:Create(uiScale, tweenInfo, {Scale = 0.01})
+    				
+    				if backScale then
+    					local backTween = service.TweenService:Create(backScale, tweenInfo, {Scale = 0.01})
+    					backTween:Play()
+    				end
+    
+    				local conn
+    				conn = tween.Completed:Connect(function()
+    					conn:Disconnect()
+    					if self.Hiding then
+    						cleanup()
+    					end
+    				end)
+    				tween:Play()
+    			end
+    		end
+    
+    		funcs.Show3D = function(self, targetInstance, hitPosition)
+    			self:Hide(true)
+    
+    			local elems = self.GuiElems
+    			elems.SearchFrame.Visible = self.SearchEnabled
+    			elems.List.Position = UDim2.new(0,2,0,2 + (self.SearchEnabled and 24 or 0))
+    			elems.List.Size = UDim2.new(1,-4,1,-4 - (self.SearchEnabled and 24 or 0))
+    			if self.SearchEnabled and self.ClearSearchOnShow then elems.SearchBar.Text = "" end
+    			self.GuiElems.List.CanvasPosition = Vector2.new(0,0)
+    
+    			if not self.Updated then
+    				self:Refresh()
+    			end
+    
+    			if not targetInstance or not targetInstance:IsA("BasePart") then
+    				self:Show()
+    				return
+    			end
+    
+    			local toSize = elems.List.UIListLayout.AbsoluteContentSize.Y + 6
+    			if self.MaxHeight and toSize > self.MaxHeight then
+    				elems.List.CanvasSize = UDim2.new(0,0,0,toSize-6)
+    				toSize = self.MaxHeight
+    			else
+    				elems.List.CanvasSize = UDim2.new(0,0,0,0)
+    			end
+    
+    			local camera = workspace.CurrentCamera
+    			local cameraPos = camera.CFrame.Position
+    
+    			-- Calculate 3D physical size for true perspective (maintaining 1:1 aspect ratio)
+    			local partWidth = 7
+    			local partHeight = partWidth * (toSize / self.Width)
+    
+    			-- Visibility and obstruction check logic
+    			local toCamera = (cameraPos - hitPosition).Magnitude > 0.001 and (cameraPos - hitPosition).Unit or Vector3.new(0, 1, 0)
+    			local basePos = hitPosition + toCamera * 1.5
+    
+    			-- Helper to raycast ignoring triggers/invisible parts/character
+    			local function isObscured(startPos, endPos)
+    				local filter = {service.Players.LocalPlayer.Character}
+    				for _, panel in ipairs(active3DPanels) do
+    					if panel.BillboardAdornee then
+    						table.insert(filter, panel.BillboardAdornee)
+    					end
+    				end
+    
+    				local params = RaycastParams.new()
+    				params.FilterType = Enum.RaycastFilterType.Exclude
+    				
+    				while true do
+    					params.FilterDescendantsInstances = filter
+    					local result = workspace:Raycast(startPos, endPos - startPos, params)
+    					if not result then
+    						return nil
+    					end
+    					
+    					local hitPart = result.Instance
+    					local isVisualObstacle = hitPart.Transparency < 0.95
+    					if isVisualObstacle then
+    						return result
+    					else
+    						table.insert(filter, hitPart)
+    					end
+    				end
+    			end
+    
+    			-- Calculate base orientation CFrame
+    			local lookTarget = Vector3.new(cameraPos.X, basePos.Y, cameraPos.Z)
+    			local baseCFrame
+    			if (lookTarget - basePos).Magnitude > 0.01 then
+    				baseCFrame = CFrame.lookAt(basePos, lookTarget)
+    			else
+    				baseCFrame = CFrame.lookAt(basePos, cameraPos)
+    			end
+    
+    			-- Test center and 4 corners of the UI plane
+    			local halfW = partWidth / 2
+    			local halfH = partHeight / 2
+    			local testOffsets = {
+    				Vector3.new(0, 0, 0), -- Center
+    				Vector3.new(-halfW, halfH, 0), -- Top-Left
+    				Vector3.new(halfW, halfH, 0), -- Top-Right
+    				Vector3.new(-halfW, -halfH, 0), -- Bottom-Left
+    				Vector3.new(halfW, -halfH, 0) -- Bottom-Right
+    			}
+    
+    			local maxAdjustment = 0
+    			for _, offset in ipairs(testOffsets) do
+    				local P = baseCFrame:PointToWorldSpace(offset)
+    				local result = isObscured(cameraPos, P)
+    				if result then
+    					local distToObstruction = (result.Position - cameraPos).Magnitude
+    					local distToPoint = (P - cameraPos).Magnitude
+    					if distToObstruction < distToPoint - 0.1 then
+    						local needed = (distToPoint - distToObstruction) + 0.5 -- 0.5 studs padding
+    						if needed > maxAdjustment then
+    							maxAdjustment = needed
+    						end
+    					end
+    				end
+    			end
+    
+    			-- Apply the adjustment to position the UI in front of all obstructions
+    			local finalPos = basePos
+    			if maxAdjustment > 0 then
+    				local maxSafeDistance = (cameraPos - basePos).Magnitude - 3.0
+    				local adjustment = math.min(maxAdjustment, math.max(0, maxSafeDistance))
+    				finalPos = basePos + toCamera * adjustment
+    			end
+    
+    			-- Create static anchored invisible part at finalPos
+    			local spatialPart = Instance.new("Part")
+    			spatialPart.Name = "_DPP_SpatialPart"
+    			spatialPart.Size = Vector3.new(partWidth, partHeight, 0.2)
+    			
+    			-- Orient to face the camera position (locking pitch rotation creates a cleaner spatial UI)
+    			local lookTargetFinal = Vector3.new(cameraPos.X, finalPos.Y, cameraPos.Z)
+    			if (lookTargetFinal - finalPos).Magnitude > 0.01 then
+    				spatialPart.CFrame = CFrame.lookAt(finalPos, lookTargetFinal)
+    			else
+    				spatialPart.CFrame = CFrame.lookAt(finalPos, cameraPos)
+    			end
+    
+    			spatialPart.Transparency = 1
+    			spatialPart.CanCollide = false
+    			spatialPart.CanTouch = false
+    			spatialPart.CanQuery = true
+    			spatialPart.Anchored = true
+    			spatialPart.Parent = workspace
+    			self.BillboardAdornee = spatialPart
+    			self.TargetInstance = targetInstance
+    
+    			-- SurfaceGui for Front Face (Interactive menu)
+    			local surfaceGui = Instance.new("SurfaceGui")
+    			surfaceGui.Adornee = spatialPart
+    			surfaceGui.Face = Enum.NormalId.Front
+    			surfaceGui.AlwaysOnTop = false
+    			surfaceGui.LightInfluence = 0
+    			surfaceGui.ClipsDescendants = false
+    			surfaceGui.CanvasSize = Vector2.new(self.Width, toSize)
+    			surfaceGui.Name = "_DPP_SurfaceGui"
+    			surfaceGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    			elems.Main.Parent = surfaceGui
+    			elems.Main.ClipsDescendants = false
+    			elems.Main.Size = UDim2.new(1, 0, 1, 0)
+    			elems.Main.Position = UDim2.new(0, 0, 0, 0)
+    
+    			local uiScale = elems.Main:FindFirstChildOfClass("UIScale")
+    			if not uiScale then
+    				uiScale = Instance.new("UIScale")
+    				uiScale.Parent = elems.Main
+    			end
+    			uiScale.Scale = 0.01
+    
+    			self.BillboardGui = surfaceGui
+    			Lib.ShowGui(surfaceGui)
+    
+    			-- SurfaceGui for Back Face (Sleek Glass Backing)
+    			local backGui = Instance.new("SurfaceGui")
+    			backGui.Adornee = spatialPart
+    			backGui.Face = Enum.NormalId.Back
+    			backGui.AlwaysOnTop = false
+    			backGui.LightInfluence = 0
+    			backGui.ClipsDescendants = false
+    			backGui.CanvasSize = Vector2.new(self.Width, toSize)
+    			backGui.Name = "_DPP_BackGui"
+    			backGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    			local backFrame = Instance.new("Frame")
+    			backFrame.Size = UDim2.new(1, 0, 1, 0)
+    			backFrame.BackgroundColor3 = elems.Main.BackgroundColor3 or Color3.fromRGB(30, 30, 30)
+    			backFrame.BackgroundTransparency = 0.45
+    			backFrame.BorderSizePixel = 0
+    			backFrame.Parent = backGui
+    
+    			local backCorner = Instance.new("UICorner")
+    			backCorner.CornerRadius = UDim.new(0, 8)
+    			backCorner.Parent = backFrame
+    
+    			local backStroke = Instance.new("UIStroke")
+    			backStroke.Color = Color3.fromRGB(80, 80, 80)
+    			backStroke.Thickness = 1.5
+    			backStroke.Transparency = 0.5
+    			backStroke.Parent = backFrame
+    
+    			local backLabel = Instance.new("TextLabel")
+    			backLabel.Size = UDim2.new(1, 0, 1, 0)
+    			backLabel.BackgroundTransparency = 1
+    			backLabel.Text = "DEX++"
+    			backLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    			backLabel.TextTransparency = 0.6
+    			backLabel.TextSize = 24
+    			backLabel.Font = Enum.Font.GothamBold
+    			backLabel.Parent = backFrame
+    
+    			local backScale = Instance.new("UIScale")
+    			backScale.Parent = backFrame
+    			backScale.Scale = 0.01
+    
+    			self.BillboardGuiBack = backGui
+    			Lib.ShowGui(backGui)
+    
+    			-- Enforce maximum panel limit (FIFO)
+    			if not table.find(active3DPanels, self) then
+    				table.insert(active3DPanels, self)
+    			end
+    			local maxPanels = Settings.Explorer.ViewportContextMenuMaxPanels or 10
+    			if maxPanels > 0 then
+    				while #active3DPanels > maxPanels do
+    					local oldest = table.remove(active3DPanels, 1)
+    					if oldest then
+    						oldest:Hide(true)
+    					end
+    				end
+    			end
+    
+    			-- Opening Animation (Scale up smoothly in unison with a subtle bounce)
+    			local openTween = service.TweenService:Create(uiScale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.0})
+    			openTween:Play()
+    
+    			local backOpenTween = service.TweenService:Create(backScale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1.0})
+    			backOpenTween:Play()
+    
+    			local closable = false
+    			if self.CloseEvent then self.CloseEvent:Disconnect() end
+    			self.CloseEvent = service.UserInputService.InputBegan:Connect(function(input)
+    				if not closable then return end
+    				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+    					local overDex = false
+    					local isOverDexGui = (Explorer and Explorer.isOverDexGui) or (Apps and Apps.Explorer and Apps.Explorer.isOverDexGui)
+    					if isOverDexGui and isOverDexGui() then
+    						overDex = true
+    					else
+    						for _, panel in ipairs(active3DPanels) do
+    							if panel.GuiElems and panel.GuiElems.Main then
+    								if Lib.CheckMouseInGui(panel.GuiElems.Main) then
+    									overDex = true
+    									break
+    								end
+    							end
+    						end
+    					end
+    
+    					if not overDex then
+    						self:Hide()
+    					end
+    				end
+    			end)
+    
+    			local outsideSince = nil
+    			self.RenderConnection = service.RunService.RenderStepped:Connect(function()
+    				if not spatialPart or not spatialPart.Parent then
+    					self:Hide(true)
+    					return
+    				end
+    
+    				-- Check distance using the CAMERA position instead of Character
+    				local refCamera = workspace.CurrentCamera
+    				local referencePos = refCamera.CFrame.Position
+    				local distance = (spatialPart.Position - referencePos).Magnitude
+    
+    				-- Check max distance limit
+    				local maxDistance = Settings.Explorer.ViewportContextMenuMaxDistance or 50
+    				local isOutside = false
+    				if maxDistance > 0 and distance > maxDistance then
+    					isOutside = true
+    				end
+    
+    				if isOutside then
+    					local closeDelay = Settings.Explorer.ViewportContextMenuDistanceCloseTime or 10
+    					if closeDelay == 0 then
+    						outsideSince = nil -- Reset if configured to stay open permanently
+    					else
+    						if not outsideSince then
+    							outsideSince = os.clock()
+    						else
+    							local elapsed = os.clock() - outsideSince
+    							if elapsed >= closeDelay then
+    								self:Hide()
+    								return
+    							end
+    						end
+    					end
+    				else
+    					outsideSince = nil -- Returned within boundaries: cancel countdown timer
+    				end
+    			end)
+    
+    			Lib.FastWait()
+    			closable = true
     		end
     
     		funcs.ApplyTheme = function(self,data)
@@ -7461,6 +7876,50 @@ end,
     				Explorer.UpdateViewportListener()
     			end
     		end)
+    
+    		local viewportMaxPanels = AddTextbox("Max 3D Panels (0 = Unlim)", tostring(Settings.Explorer.ViewportContextMenuMaxPanels or 10), 45)
+    		viewportMaxPanels.FocusLost:Connect(function()
+    			local num = tonumber(viewportMaxPanels.Text)
+    			if num then
+    				Settings.Explorer.ViewportContextMenuMaxPanels = math.max(0, math.floor(num))
+    				viewportMaxPanels.Text = tostring(Settings.Explorer.ViewportContextMenuMaxPanels)
+    			else
+    				viewportMaxPanels.Text = tostring(Settings.Explorer.ViewportContextMenuMaxPanels or 10)
+    			end
+    		end)
+    
+    		local viewportCloseDelay = AddTextbox("3D Panel Close Delay (0 = Perm)", tostring(Settings.Explorer.ViewportContextMenuDistanceCloseTime or 10), 45)
+    		viewportCloseDelay.FocusLost:Connect(function()
+    			local num = tonumber(viewportCloseDelay.Text)
+    			if num then
+    				Settings.Explorer.ViewportContextMenuDistanceCloseTime = math.max(0, num)
+    				viewportCloseDelay.Text = tostring(Settings.Explorer.ViewportContextMenuDistanceCloseTime)
+    			else
+    				viewportCloseDelay.Text = tostring(Settings.Explorer.ViewportContextMenuDistanceCloseTime or 10)
+    			end
+    		end)
+    
+    		local viewportMaxDist = AddTextbox("3D Panel Max Distance (0 = Inf)", tostring(Settings.Explorer.ViewportContextMenuMaxDistance or 50), 45)
+    		viewportMaxDist.FocusLost:Connect(function()
+    			local num = tonumber(viewportMaxDist.Text)
+    			if num then
+    				Settings.Explorer.ViewportContextMenuMaxDistance = math.max(0, num)
+    				viewportMaxDist.Text = tostring(Settings.Explorer.ViewportContextMenuMaxDistance)
+    			else
+    				viewportMaxDist.Text = tostring(Settings.Explorer.ViewportContextMenuMaxDistance or 50)
+    			end
+    		end)
+    
+    		local fallbackDist = AddTextbox("2D Fallback Distance (0 = Inf)", tostring(Settings.Explorer.ViewportContextMenu2DFallbackDistance or 50), 45)
+    		fallbackDist.FocusLost:Connect(function()
+    			local num = tonumber(fallbackDist.Text)
+    			if num then
+    				Settings.Explorer.ViewportContextMenu2DFallbackDistance = math.max(0, num)
+    				fallbackDist.Text = tostring(Settings.Explorer.ViewportContextMenu2DFallbackDistance)
+    			else
+    				fallbackDist.Text = tostring(Settings.Explorer.ViewportContextMenu2DFallbackDistance or 50)
+    			end
+    		end)
     		
     		AddSeperator("Properties")
     
@@ -9207,7 +9666,35 @@ end,
     		renameBox.FocusLost:Connect(function()
     			if not renamingNode then return end
     
-    			pcall(function() renamingNode.Obj.Name = renameBox.Text end)
+    			local instance = renamingNode.Obj
+    			local oldName = instance.Name
+    			local newName = renameBox.Text
+    
+    			if oldName ~= newName then
+    				local function undo()
+    					pcall(function() instance.Name = oldName end)
+    					local node = nodes[instance]
+    					if node then node.NameWidth = nil end
+    				end
+    
+    				local function redo()
+    					pcall(function() instance.Name = newName end)
+    					local node = nodes[instance]
+    					if node then node.NameWidth = nil end
+    				end
+    
+    				redo()
+    
+    				local History = Apps.History
+    				if History and History.Add then
+    					History.Add({
+    						Name = "Rename",
+    						Undo = undo,
+    						Redo = redo
+    					})
+    				end
+    			end
+    
     			renamingNode = nil
     			Explorer.Refresh()
     		end)
@@ -9453,10 +9940,47 @@ end,
     							if selection.Map[node] then return end
     							local newPar = node.Obj
     							local sList = selection.List
+    							local reparented = {}
+    
     							for i = 1,#sList do
     								local n = sList[i]
-    								pcall(function() n.Obj.Parent = newPar end)
+    								if n and n.Obj then
+    									local success, originalParent = pcall(function() return n.Obj.Parent end)
+    									if success and originalParent then
+    										table.insert(reparented, {
+    											Obj = n.Obj,
+    											OriginalParent = originalParent,
+    											NewParent = newPar
+    										})
+    									end
+    								end
     							end
+    
+    							if #reparented > 0 then
+    								local function undo()
+    									for _, item in ipairs(reparented) do
+    										pcall(function() item.Obj.Parent = item.OriginalParent end)
+    									end
+    								end
+    
+    								local function redo()
+    									for _, item in ipairs(reparented) do
+    										pcall(function() item.Obj.Parent = item.NewParent end)
+    									end
+    								end
+    
+    								redo()
+    
+    								local History = Apps.History
+    								if History and History.Add then
+    									History.Add({
+    										Name = "Reparent",
+    										Undo = undo,
+    										Redo = redo
+    									})
+    								end
+    							end
+    
     							Explorer.ViewNode(sList[1])
     						end
     						break
@@ -9754,6 +10278,18 @@ end,
     		if not norefresh then Explorer.Refresh() end
     	end
     
+    	Explorer.AddObject = function(obj)
+    		return withExplorerAccess(addObject, obj)
+    	end
+    
+    	Explorer.RemoveObject = function(obj)
+    		return withExplorerAccess(removeObject, obj)
+    	end
+    
+    	Explorer.MoveObject = function(obj)
+    		return withExplorerAccess(moveObject, obj)
+    	end
+    
     	Explorer.PerformRefresh = function()
     		refreshDebounce = true
     		Lib.FastWait(0.1)
@@ -9797,21 +10333,13 @@ end,
     		descendantAddedCon = Main.RegisterConnection(game.DescendantAdded:Connect(safeCallback(addObject)))
     		descendantRemovingCon = Main.RegisterConnection(game.DescendantRemoving:Connect(safeCallback(removeObject)))
     
-    		if Settings.Explorer.UseNameWidth then
-    			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
-    				if prop == "Parent" and nodes[obj] then
-    					moveObject(obj)
-    				elseif prop == "Name" and nodes[obj] then
-    					nodes[obj].NameWidth = nil
-    				end
-    			end)))
-    		else
-    			itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
-    				if prop == "Parent" and nodes[obj] then
-    					moveObject(obj)
-    				end
-    			end)))
-    		end
+    		itemChangedCon = Main.RegisterConnection(game.ItemChanged:Connect(safeCallback(function(obj,prop)
+    			if prop == "Parent" and nodes[obj] then
+    				moveObject(obj)
+    			elseif prop == "Name" and nodes[obj] then
+    				nodes[obj].NameWidth = nil
+    			end
+    		end)))
     	end
     
     	Explorer.Uninit = function()
@@ -9876,12 +10404,120 @@ end,
     		end
     	end
     
-    	Explorer.ShowRightClick = function(MousePos)
+    	Explorer.ShowRightClick = function(MousePos, Show3DTarget, Show3DHitPosition)
     		local Mouse = MousePos or Main.Mouse
-    		local context = Explorer.RightClickContext
+    		
+    		local context
+    		local isCtrlDown = Lib.IsCtrlDown()
+    
+    		if Show3DTarget then
+    			local camera = workspace.CurrentCamera
+    			local cameraPos = camera and camera.CFrame.Position
+    			local targetPos = Show3DHitPosition or (Show3DTarget:IsA("BasePart") and Show3DTarget.Position)
+    			
+    			local fallbackDistance = Settings.Explorer.ViewportContextMenu2DFallbackDistance or 50
+    			if fallbackDistance > 0 and cameraPos and targetPos then
+    				local distance = (cameraPos - targetPos).Magnitude
+    				if distance > fallbackDistance then
+    					Show3DTarget = nil
+    				end
+    			end
+    		end
+    
+    		if Show3DTarget then
+    			-- Ensure each part/mesh can only open a single unique UI
+    			for _, panel in ipairs(Lib.GetActive3DPanels()) do
+    				if panel.TargetInstance == Show3DTarget then
+    					return
+    				end
+    			end
+    
+    			if not isCtrlDown then
+    				Lib.ClearAll3DPanels()
+    			end
+    			context = Lib.ContextMenu.new()
+    			local targetNode = nodes[Show3DTarget]
+    			for k, v in next, Explorer.RightClickContext.Registered do
+    				local originalOnClick = v.OnClick
+    				local originalOnRightClick = v.OnRightClick
+    
+    				context.Registered[k] = {
+    					Name = v.Name,
+    					Icon = v.Icon,
+    					Shortcut = v.Shortcut,
+    					IconMap = v.IconMap,
+    					DisabledIcon = v.DisabledIcon,
+    					NoHide = v.NoHide,
+    					OnClick = originalOnClick and function(name)
+    						if targetNode then
+    							selection:Set(targetNode)
+    							Explorer.Refresh()
+    						end
+    						originalOnClick(name)
+    					end or nil,
+    					OnHover = v.OnHover,
+    					OnRightClick = originalOnRightClick and function(name)
+    						if targetNode then
+    							selection:Set(targetNode)
+    							Explorer.Refresh()
+    						end
+    						originalOnRightClick(name)
+    					end or nil
+    				}
+    			end
+    			context:ApplyTheme({
+    				ContentColor = Settings.Theme.Menu,
+    				OutlineColor = Settings.Theme.Menu,
+    				DividerColor = Settings.Theme.Outline2,
+    				TextColor = Settings.Theme.Text,
+    				HighlightColor = Settings.Theme.Main1
+    			})
+    		else
+    			Lib.ClearAll3DPanels()
+    			context = Explorer.RightClickContext
+    		end
+    
     		local absoluteSize = context.Gui.AbsoluteSize
-    		context.MaxHeight = (absoluteSize.Y <= 600 and (absoluteSize.Y - 40)) or nil
+    		if Show3DTarget then
+    			context.MaxHeight = 600
+    		else
+    			context.MaxHeight = (absoluteSize.Y > 40 and absoluteSize.Y <= 600 and (absoluteSize.Y - 40)) or nil
+    		end
     		context:Clear()
+    
+    		if Show3DTarget then
+    			local parentObj = Show3DTarget.Parent
+    			if parentObj and parentObj ~= workspace and parentObj ~= game then
+    				context:Add({
+    					Name = "Select Parent (" .. parentObj.Name .. ")",
+    					IconMap = Explorer.MiscIcons,
+    					Icon = "JumpToParent",
+    					OnClick = function()
+    						local parentNode = nodes[parentObj]
+    						if parentNode then
+    							selection:Set(parentNode)
+    							Explorer.ViewNode(parentNode)
+    							Explorer.Refresh()
+    						end
+    					end
+    				})
+    				context:AddDivider()
+    			end
+    
+    			context:Add({
+    				Name = "Focus in Explorer",
+    				IconMap = Explorer.MiscIcons,
+    				Icon = "ExploreData",
+    				OnClick = function()
+    					local node = nodes[Show3DTarget]
+    					if node then
+    						Explorer.ViewNode(node)
+    						Explorer.Refresh()
+    					end
+    				end
+    			})
+    			context:AddDivider()
+    		end
     
     		local sList = selection.List
     		local sMap = selection.Map
@@ -10026,7 +10662,12 @@ end,
     		end
     
     		Explorer.LastRightClickX, Explorer.LastRightClickY = Mouse.X, Mouse.Y
-    		context:Show(Mouse.X, Mouse.Y)
+    		if Show3DTarget then
+    			local targetPos = Show3DHitPosition or (Show3DTarget:IsA("BasePart") and Show3DTarget.Position) or workspace.CurrentCamera.CFrame.Position
+    			context:Show3D(Show3DTarget, targetPos)
+    		else
+    			context:Show(Mouse.X, Mouse.Y)
+    		end
     	end
     
     	Explorer.InitRightClick = function()
@@ -11063,17 +11704,17 @@ end,
     			local pos = service.UserInputService:GetMouseLocation()
     
     			local function isDexGuiObject(obj)
-    				local screenGui = obj:FindFirstAncestorOfClass("ScreenGui")
-    				if not screenGui then return false end
+    				local gui = obj:FindFirstAncestorOfClass("ScreenGui") or obj:FindFirstAncestorOfClass("SurfaceGui")
+    				if not gui then return false end
     
-    				local name = screenGui.Name
+    				local name = gui.Name
     				if string.sub(name, 1, 5) == "_DPP_" then
     					return true
     				end
     
     				if gethui then
     					local success, hui = pcall(gethui)
-    					if success and hui and (hui ~= service.CoreGui) and screenGui:IsDescendantOf(hui) then
+    					if success and hui and (hui ~= service.CoreGui) and gui:IsDescendantOf(hui) then
     						return true
     					end
     				end
@@ -11135,8 +11776,8 @@ end,
     					if getDescendantsSuccess and list then
     						for _, obj in ipairs(list) do
     							if obj:IsA("GuiObject") and obj.AbsoluteSize.X > 0 and obj.AbsoluteSize.Y > 0 then
-    								local screenGui = obj:FindFirstAncestorOfClass("ScreenGui")
-    								if screenGui and screenGui.Enabled then
+    								local gui = obj:FindFirstAncestorOfClass("ScreenGui") or obj:FindFirstAncestorOfClass("SurfaceGui")
+    								if gui and gui.Enabled then
     									local absPos = obj.AbsolutePosition
     									local absSize = obj.AbsoluteSize
     									if pos.X >= absPos.X and pos.X < absPos.X + absSize.X and
@@ -11147,6 +11788,23 @@ end,
     									end
     								end
     							end
+    						end
+    					end
+    				end
+    			end
+    
+    			if Lib and Lib.GetActive3DPanels then
+    				for _, panel in ipairs(Lib.GetActive3DPanels()) do
+    					if panel.BillboardAdornee and panel.BillboardAdornee.Parent then
+    						local camera = workspace.CurrentCamera
+    						local mouseRay = camera:ViewportPointToRay(pos.X, pos.Y)
+    						local params = RaycastParams.new()
+    						params.FilterType = Enum.RaycastFilterType.Include
+    						params.FilterDescendantsInstances = {panel.BillboardAdornee}
+    						params.IgnoreWater = true
+    						local result = workspace:Raycast(mouseRay.Origin, mouseRay.Direction * 1000, params)
+    						if result then
+    							return true
     						end
     					end
     				end
@@ -11188,7 +11846,7 @@ end,
     						Explorer.ViewNode(targetNode)
     						Explorer.Refresh()
     
-    						Explorer.ShowViewportRightClick(position, targetNode.Obj)
+    						Explorer.ShowViewportRightClick(position, targetNode.Obj, mouse.Hit.Position)
     					end
     				end
     			end
@@ -11222,7 +11880,7 @@ end,
     					elseif triggerType == "Right Click" then
     						local duration = os.clock() - clickStartTime
     						local delta = (input.Position - clickStartPos).Magnitude
-    						if duration < 0.25 and delta < 10 then
+    						if duration < 0.8 and delta < 30 then
     							triggerSelect(input.Position)
     						end
     					end
@@ -11230,60 +11888,8 @@ end,
     			end)
     		end
     
-    		Explorer.ShowViewportRightClick = function(MousePos, targetObj)
-    			local Mouse = MousePos or Main.Mouse
-    			local context = Explorer.RightClickContext
-    			local absoluteSize = context.Gui.AbsoluteSize
-    			context.MaxHeight = (absoluteSize.Y <= 600 and (absoluteSize.Y - 40)) or nil
-    			context:Clear()
-    
-    			local sList = selection.List
-    			local sMap = selection.Map
-    
-    			local parentObj = targetObj.Parent
-    			if parentObj and parentObj ~= workspace and parentObj ~= game then
-    				context:Add({
-    					Name = "Select Parent (" .. parentObj.Name .. ")",
-    					IconMap = Explorer.MiscIcons,
-    					Icon = "JumpToParent",
-    					OnClick = function()
-    						local parentNode = nodes[parentObj]
-    						if parentNode then
-    							selection:Set(parentNode)
-    							Explorer.ViewNode(parentNode)
-    							Explorer.Refresh()
-    						end
-    					end
-    				})
-    				context:AddDivider()
-    			end
-    
-    			context:Add({
-    				Name = "Focus in Explorer",
-    				IconMap = Explorer.MiscIcons,
-    				Icon = "ExploreData",
-    				OnClick = function()
-    					local node = nodes[targetObj]
-    					if node then
-    						Explorer.ViewNode(node)
-    						Explorer.Refresh()
-    					end
-    				end
-    			})
-    
-    			context:AddRegistered("COPY_PATH")
-    
-    			context:AddDivider("Tools")
-    			context:AddRegistered("3DVIEW_MODEL")
-    			context:AddRegistered("COPY_PROPERTIES")
-    			context:AddRegistered("PASTE_PROPERTIES", not Apps.PropertyCopier or not Apps.PropertyCopier.HasCache())
-    			context:AddRegistered("RESTORE_PROPERTIES", not Apps.PropertyRestorer or not Apps.PropertyRestorer.HasBackup(targetObj))
-    
-    			context:AddDivider("Actions")
-    			context:AddRegistered("DELETE")
-    
-    			Explorer.LastRightClickX, Explorer.LastRightClickY = Mouse.X, Mouse.Y
-    			context:Show(Mouse.X, Mouse.Y)
+    		Explorer.ShowViewportRightClick = function(MousePos, targetObj, hitPosition)
+    			Explorer.ShowRightClick(MousePos, targetObj, hitPosition)
     		end
     
     		-- Settings
@@ -11346,6 +11952,32 @@ end,
     			pcall(Explorer.RefreshNilInstances)
     		end)
     
+    		-- Global Undo/Redo Keyboard Shortcuts
+    		service.UserInputService.InputBegan:Connect(function(input, processed)
+    			if service.UserInputService:GetFocusedTextBox() then return end
+    
+    			local ctrl = service.UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    			local shift = service.UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+    
+    			if ctrl then
+    				if input.KeyCode == Enum.KeyCode.Z then
+    					local History = Apps.History
+    					if History then
+    						if shift then
+    							if History.Redo then History.Redo() end
+    						else
+    							if History.Undo then History.Undo() end
+    						end
+    					end
+    				elseif input.KeyCode == Enum.KeyCode.Y then
+    					local History = Apps.History
+    					if History and History.Redo then
+    						History.Redo()
+    					end
+    				end
+    			end
+    		end)
+    
     		-- Hook __namecall for Metatable Sniffing
     		if env.hookmetamethod then
     			task.spawn(function()
@@ -11402,7 +12034,7 @@ end,
     		local nodes = data.nodes
     		local Explorer = data.Explorer
     
-    		context:Register("CUT",{Name = "Cut", IconMap = Explorer.MiscIcons, Icon = "Cut", DisabledIcon = "Cut_Disabled", Shortcut = "Ctrl+Z", OnClick = function()
+    		context:Register("CUT",{Name = "Cut", IconMap = Explorer.MiscIcons, Icon = "Cut", DisabledIcon = "Cut_Disabled", Shortcut = "Ctrl+X", OnClick = function()
     			if Apps.Clipboard then
     				Apps.Clipboard.Cut(selection.List, selection)
     			end
@@ -11442,6 +12074,18 @@ end,
     		context:Register("RENAME",{Name = "Rename", IconMap = Explorer.MiscIcons, Icon = "Rename", DisabledIcon = "Rename_Disabled", Shortcut = "F2", OnClick = function()
     			if Apps.Rename then
     				Apps.Rename.Execute(selection.List, Explorer.SetRenamingNode)
+    			end
+    		end})
+    
+    		context:Register("UNDO",{Name = "Undo", IconMap = Explorer.MiscIcons, Icon = "Undo", DisabledIcon = "Undo_Disabled", Shortcut = "Ctrl+Z", OnClick = function()
+    			if Apps.History then
+    				Apps.History.Undo()
+    			end
+    		end})
+    
+    		context:Register("REDO",{Name = "Redo", IconMap = Explorer.MiscIcons, Icon = "Redo", DisabledIcon = "Redo_Disabled", Shortcut = "Ctrl+Y", OnClick = function()
+    			if Apps.History then
+    				Apps.History.Redo()
     			end
     		end})
     	end
@@ -15240,7 +15884,10 @@ end,
     	createSimple = data.createSimple
     end
     
+    local History
+    
     local function initAfterMain()
+    	History = Apps.History
     end
     
     local function main()
@@ -15270,9 +15917,11 @@ end,
     	end
     
     	Clipboard.Cut = function(selectionList, selection)
-    		local destroy, clone = game.Destroy, game.Clone
+    		local clone = game.Clone
     		local newClipboard = {}
     		local count = 1
+    		local cutInstances = {}
+    
     		for i = 1, #selectionList do
     			local node = selectionList[i]
     			if node and node.Obj then
@@ -15282,13 +15931,60 @@ end,
     					newClipboard[count] = cloned
     					count = count + 1
     				end
-    				pcall(destroy, inst)
+    				local success, parent = pcall(function() return inst.Parent end)
+    				if success and parent then
+    					table.insert(cutInstances, {
+    						Obj = inst,
+    						OriginalParent = parent
+    					})
+    				end
     			end
     		end
+    
+    		if #cutInstances == 0 then return end
+    
     		table.clear(Clipboard.List)
     		for _, v in ipairs(newClipboard) do
     			table.insert(Clipboard.List, v)
     		end
+    
+    		local function undo()
+    			for _, item in ipairs(cutInstances) do
+    				pcall(function() item.Obj.Parent = item.OriginalParent end)
+    				if Apps.Explorer and Apps.Explorer.AddObject then
+    					pcall(Apps.Explorer.AddObject, item.Obj)
+    				end
+    			end
+    		end
+    
+    		local function redo()
+    			for _, item in ipairs(cutInstances) do
+    				if Apps.Explorer and Apps.Explorer.RemoveObject then
+    					pcall(Apps.Explorer.RemoveObject, item.Obj)
+    				end
+    				pcall(function() item.Obj.Parent = nil end)
+    			end
+    		end
+    
+    		local function onDestroy()
+    			for _, item in ipairs(cutInstances) do
+    				pcall(game.Destroy, item.Obj)
+    			end
+    		end
+    
+    		redo()
+    
+    		if History and History.Add then
+    			History.Add({
+    				Name = "Cut",
+    				Undo = undo,
+    				Redo = redo,
+    				OnDestroy = onDestroy
+    			})
+    		else
+    			onDestroy()
+    		end
+    
     		if selection and selection.Clear then
     			selection:Clear()
     		end
@@ -15297,7 +15993,9 @@ end,
     	Clipboard.Paste = function(selectionList, nodes, selection, ViewNode, MakeNodeVisible)
     		if #Clipboard.List == 0 then return end
     		local newSelection = {}
+    		local pastedInstances = {}
     		local count = 1
+    
     		for i = 1, #selectionList do
     			local node = selectionList[i]
     			local inst = node.Obj
@@ -15308,6 +16006,13 @@ end,
     				local cloned = Clipboard.List[c]:Clone()
     				if cloned then
     					cloned.Parent = inst
+    					if Apps.Explorer and Apps.Explorer.AddObject then
+    						pcall(Apps.Explorer.AddObject, cloned)
+    					end
+    					table.insert(pastedInstances, {
+    						Obj = cloned,
+    						OriginalParent = inst
+    					})
     					local clonedNode = nodes[cloned]
     					if clonedNode then
     						newSelection[count] = clonedNode
@@ -15316,6 +16021,55 @@ end,
     				end
     			end
     		end
+    
+    		if #pastedInstances == 0 then return end
+    
+    		local function undo()
+    			for _, item in ipairs(pastedInstances) do
+    				if Apps.Explorer and Apps.Explorer.RemoveObject then
+    					pcall(Apps.Explorer.RemoveObject, item.Obj)
+    				end
+    				pcall(function() item.Obj.Parent = nil end)
+    			end
+    			if selection and selection.Clear then
+    				selection:Clear()
+    			end
+    		end
+    
+    		local function redo()
+    			for _, item in ipairs(pastedInstances) do
+    				pcall(function() item.Obj.Parent = item.OriginalParent end)
+    				if Apps.Explorer and Apps.Explorer.AddObject then
+    					pcall(Apps.Explorer.AddObject, item.Obj)
+    				end
+    			end
+    			local nodesToSelect = {}
+    			for _, item in ipairs(pastedInstances) do
+    				local node = nodes[item.Obj]
+    				if node then
+    					table.insert(nodesToSelect, node)
+    				end
+    			end
+    			if selection and selection.SetTable and #nodesToSelect > 0 then
+    				selection:SetTable(nodesToSelect)
+    			end
+    		end
+    
+    		local function onDestroy()
+    			for _, item in ipairs(pastedInstances) do
+    				pcall(game.Destroy, item.Obj)
+    			end
+    		end
+    
+    		if History and History.Add then
+    			History.Add({
+    				Name = "Paste",
+    				Undo = undo,
+    				Redo = redo,
+    				OnDestroy = onDestroy
+    			})
+    		end
+    
     		if selection and selection.SetTable then
     			selection:SetTable(newSelection)
     		end
@@ -15362,7 +16116,10 @@ end,
     	createSimple = data.createSimple
     end
     
+    local History
+    
     local function initAfterMain()
+    	History = Apps.History
     end
     
     local function main()
@@ -15371,7 +16128,9 @@ end,
     	Duplicate.Execute = function(selectionList, nodes, selection, ViewNode, MakeNodeVisible)
     		local clone = game.Clone
     		local newSelection = {}
+    		local duplicatedInstances = {}
     		local count = 1
+    
     		for i = 1, #selectionList do
     			local node = selectionList[i]
     			local inst = node.Obj
@@ -15382,12 +16141,67 @@ end,
     			local s, cloned = pcall(clone, inst)
     			if s and cloned then
     				cloned.Parent = instPar
+    				if Apps.Explorer and Apps.Explorer.AddObject then
+    					pcall(Apps.Explorer.AddObject, cloned)
+    				end
+    				table.insert(duplicatedInstances, {
+    					Obj = cloned,
+    					OriginalParent = instPar
+    				})
     				local clonedNode = nodes[cloned]
     				if clonedNode then
     					newSelection[count] = clonedNode
     					count = count + 1
     				end
     			end
+    		end
+    
+    		if #duplicatedInstances == 0 then return end
+    
+    		local function undo()
+    			for _, item in ipairs(duplicatedInstances) do
+    				if Apps.Explorer and Apps.Explorer.RemoveObject then
+    					pcall(Apps.Explorer.RemoveObject, item.Obj)
+    				end
+    				pcall(function() item.Obj.Parent = nil end)
+    			end
+    			if selection and selection.Clear then
+    				selection:Clear()
+    			end
+    		end
+    
+    		local function redo()
+    			for _, item in ipairs(duplicatedInstances) do
+    				pcall(function() item.Obj.Parent = item.OriginalParent end)
+    				if Apps.Explorer and Apps.Explorer.AddObject then
+    					pcall(Apps.Explorer.AddObject, item.Obj)
+    				end
+    			end
+    			local nodesToSelect = {}
+    			for _, item in ipairs(duplicatedInstances) do
+    				local node = nodes[item.Obj]
+    				if node then
+    					table.insert(nodesToSelect, node)
+    				end
+    			end
+    			if selection and selection.SetTable and #nodesToSelect > 0 then
+    				selection:SetTable(nodesToSelect)
+    			end
+    		end
+    
+    		local function onDestroy()
+    			for _, item in ipairs(duplicatedInstances) do
+    				pcall(game.Destroy, item.Obj)
+    			end
+    		end
+    
+    		if History and History.Add then
+    			History.Add({
+    				Name = "Duplicate",
+    				Undo = undo,
+    				Redo = redo,
+    				OnDestroy = onDestroy
+    			})
     		end
     
     		if selection and selection.SetTable then
@@ -15432,31 +16246,127 @@ end,
     	createSimple = data.createSimple
     end
     
+    local History
+    
     local function initAfterMain()
+    	History = Apps.History
     end
     
     local function main()
     	local Deletion = {}
     
     	Deletion.Delete = function(selectionList, selection)
-    		local destroy = game.Destroy
+    		local deletedInstances = {}
     		for i = 1, #selectionList do
     			local node = selectionList[i]
     			if node and node.Obj then
-    				pcall(destroy, node.Obj)
+    				local obj = node.Obj
+    				local success, parent = pcall(function() return obj.Parent end)
+    				if success and parent then
+    					table.insert(deletedInstances, {
+    						Obj = obj,
+    						OriginalParent = parent
+    					})
+    				end
     			end
     		end
+    
+    		if #deletedInstances == 0 then return end
+    
+    		local function undo()
+    			for _, item in ipairs(deletedInstances) do
+    				pcall(function() item.Obj.Parent = item.OriginalParent end)
+    				if Apps.Explorer and Apps.Explorer.AddObject then
+    					pcall(Apps.Explorer.AddObject, item.Obj)
+    				end
+    			end
+    		end
+    
+    		local function redo()
+    			for _, item in ipairs(deletedInstances) do
+    				if Apps.Explorer and Apps.Explorer.RemoveObject then
+    					pcall(Apps.Explorer.RemoveObject, item.Obj)
+    				end
+    				pcall(function() item.Obj.Parent = nil end)
+    			end
+    		end
+    
+    		local function onDestroy()
+    			for _, item in ipairs(deletedInstances) do
+    				pcall(game.Destroy, item.Obj)
+    			end
+    		end
+    
+    		redo()
+    
+    		if History and History.Add then
+    			History.Add({
+    				Name = "Delete",
+    				Undo = undo,
+    				Redo = redo,
+    				OnDestroy = onDestroy
+    			})
+    		else
+    			onDestroy()
+    		end
+    
     		if selection and selection.Clear then
     			selection:Clear()
     		end
     	end
     
     	Deletion.DeleteChildren = function(selectionList)
+    		local deletedInstances = {}
     		for i = 1, #selectionList do
     			local node = selectionList[i]
     			if node and node.Obj then
-    				pcall(node.Obj.ClearAllChildren, node.Obj)
+    				local children = node.Obj:GetChildren()
+    				for _, child in ipairs(children) do
+    					table.insert(deletedInstances, {
+    						Obj = child,
+    						OriginalParent = node.Obj
+    					})
+    				end
     			end
+    		end
+    
+    		if #deletedInstances == 0 then return end
+    
+    		local function undo()
+    			for _, item in ipairs(deletedInstances) do
+    				pcall(function() item.Obj.Parent = item.OriginalParent end)
+    				if Apps.Explorer and Apps.Explorer.AddObject then
+    					pcall(Apps.Explorer.AddObject, item.Obj)
+    				end
+    			end
+    		end
+    
+    		local function redo()
+    			for _, item in ipairs(deletedInstances) do
+    				if Apps.Explorer and Apps.Explorer.RemoveObject then
+    					pcall(Apps.Explorer.RemoveObject, item.Obj)
+    				end
+    				pcall(function() item.Obj.Parent = nil end)
+    			end
+    		end
+    
+    		local function onDestroy()
+    			for _, item in ipairs(deletedInstances) do
+    				pcall(game.Destroy, item.Obj)
+    			end
+    		end
+    
+    		redo()
+    
+    		if History and History.Add then
+    			History.Add({
+    				Name = "Delete Children",
+    				Undo = undo,
+    				Redo = redo,
+    				OnDestroy = onDestroy
+    			})
+    		else
+    			onDestroy()
     		end
     	end
     
@@ -15494,10 +16404,11 @@ end,
     	createSimple = data.createSimple
     end
     
-    local PropertyRestorer
+    local PropertyRestorer, History
     
     local function initAfterMain()
     	PropertyRestorer = Apps.PropertyRestorer
+    	History = Apps.History
     end
     
     local function main()
@@ -15592,29 +16503,81 @@ end,
     	PropertyCopier.Paste = function(targetInstance)
     		if not targetInstance or not copiedCache then return end
     
-    		-- Backup original properties before pasting
-    		if PropertyRestorer then
-    			PropertyRestorer.Backup(targetInstance)
+    		-- Backup original properties locally before pasting
+    		local oldProperties = {}
+    		local function addOldProp(name)
+    			pcall(function() oldProperties[name] = targetInstance[name] end)
     		end
-    		
-    		for k, v in pairs(copiedCache.Properties) do
-    			pcall(function()
-    				targetInstance[k] = v
-    			end)
+    		if targetInstance:IsA("BasePart") then
+    			addOldProp("Material")
+    			pcall(function() addOldProp("MaterialVariant") end)
+    			addOldProp("Color")
+    			addOldProp("Transparency")
+    			addOldProp("Reflectance")
+    			addOldProp("Size")
+    			addOldProp("CanCollide")
+    			addOldProp("Anchored")
+    			addOldProp("CastShadow")
+    		end
+    		if targetInstance:IsA("MeshPart") then
+    			pcall(function() addOldProp("MeshId") end)
+    			pcall(function() addOldProp("TextureID") end)
+    		end
+    		local oldSpecialMesh = nil
+    		local specialMesh = targetInstance:FindFirstChildOfClass("SpecialMesh")
+    		if specialMesh then
+    			oldSpecialMesh = {
+    				MeshId = specialMesh.MeshId,
+    				TextureId = specialMesh.TextureId,
+    				Scale = specialMesh.Scale,
+    				Offset = specialMesh.Offset,
+    				MeshType = specialMesh.MeshType
+    			}
     		end
     
-    		local specMesh = copiedCache.SpecialMesh
-    		if specMesh then
-    			local specialMesh = targetInstance:FindFirstChildOfClass("SpecialMesh")
-    			if not specialMesh then
-    				specialMesh = Instance.new("SpecialMesh")
-    				specialMesh.Parent = targetInstance
+    		local function applyNew()
+    			for k, v in pairs(copiedCache.Properties) do
+    				pcall(function() targetInstance[k] = v end)
     			end
-    			for k, v in pairs(specMesh) do
-    				pcall(function()
-    					specialMesh[k] = v
-    				end)
+    			local specMesh = copiedCache.SpecialMesh
+    			if specMesh then
+    				local mesh = targetInstance:FindFirstChildOfClass("SpecialMesh")
+    				if not mesh then
+    					mesh = Instance.new("SpecialMesh")
+    					mesh.Parent = targetInstance
+    				end
+    				for k, v in pairs(specMesh) do
+    					pcall(function() mesh[k] = v end)
+    				end
     			end
+    		end
+    
+    		local function applyOld()
+    			for k, v in pairs(oldProperties) do
+    				pcall(function() targetInstance[k] = v end)
+    			end
+    			local mesh = targetInstance:FindFirstChildOfClass("SpecialMesh")
+    			if oldSpecialMesh then
+    				if not mesh then
+    					mesh = Instance.new("SpecialMesh")
+    					mesh.Parent = targetInstance
+    				end
+    				for k, v in pairs(oldSpecialMesh) do
+    					pcall(function() mesh[k] = v end)
+    				end
+    			elseif mesh then
+    				mesh:Destroy()
+    			end
+    		end
+    
+    		applyNew()
+    
+    		if History and History.Add then
+    			History.Add({
+    				Name = "Paste Properties",
+    				Undo = applyOld,
+    				Redo = applyNew
+    			})
     		end
     	end
     
@@ -15793,6 +16756,123 @@ end,
     	end
     
     	return Rename
+    end
+    
+    return {
+    	InitDeps = initDeps,
+    	InitAfterMain = initAfterMain,
+    	Main = main
+    }
+end,
+["History"] = function()
+    --[[
+    	History Manager Module
+    	Handles general action history (Undo / Redo) for DEX++.
+    ]]
+    
+    -- Common Locals
+    local Main, Lib, Apps, Settings
+    local API, RMD, env, service, plr, create, createSimple
+    
+    local function initDeps(data)
+    	Main = data.Main
+    	Lib = data.Lib
+    	Apps = data.Apps
+    	Settings = data.Settings
+    
+    	API = data.API
+    	RMD = data.RMD
+    	env = data.env
+    	service = data.service
+    	plr = data.plr
+    	create = data.create
+    	createSimple = data.createSimple
+    end
+    
+    local function initAfterMain()
+    end
+    
+    local function main()
+    	local History = {}
+    	local undoStack = {}
+    	local redoStack = {}
+    	local maxHistorySize = 50
+    
+    	History.Add = function(action)
+    		table.insert(undoStack, action)
+    		if #undoStack > maxHistorySize then
+    			local evicted = table.remove(undoStack, 1)
+    			if evicted and evicted.OnDestroy then
+    				pcall(evicted.OnDestroy)
+    			end
+    		end
+    		-- Clear redo stack whenever a new action is performed
+    		for _, action in ipairs(redoStack) do
+    			if action.OnDestroy then
+    				pcall(action.OnDestroy)
+    			end
+    		end
+    		table.clear(redoStack)
+    	end
+    
+    	History.Undo = function()
+    		if #undoStack == 0 then return end
+    		local action = table.remove(undoStack)
+    		local ok, err = pcall(action.Undo)
+    		if ok then
+    			table.insert(redoStack, action)
+    		else
+    			warn("Undo failed: " .. tostring(err))
+    		end
+    		if Apps.Explorer then
+    			if Apps.Explorer.ForceUpdate then
+    				Apps.Explorer.ForceUpdate()
+    			elseif Apps.Explorer.Refresh then
+    				Apps.Explorer.Refresh()
+    			end
+    		end
+    		if Apps.Properties and Apps.Properties.Update then
+    			Apps.Properties.Update()
+    		end
+    	end
+    
+    	History.Redo = function()
+    		if #redoStack == 0 then return end
+    		local action = table.remove(redoStack)
+    		local ok, err = pcall(action.Redo)
+    		if ok then
+    			table.insert(undoStack, action)
+    		else
+    			warn("Redo failed: " .. tostring(err))
+    		end
+    		if Apps.Explorer then
+    			if Apps.Explorer.ForceUpdate then
+    				Apps.Explorer.ForceUpdate()
+    			elseif Apps.Explorer.Refresh then
+    				Apps.Explorer.Refresh()
+    			end
+    		end
+    		if Apps.Properties and Apps.Properties.Update then
+    			Apps.Properties.Update()
+    		end
+    	end
+    
+    	History.Clear = function()
+    		for _, action in ipairs(undoStack) do
+    			if action.OnDestroy then
+    				pcall(action.OnDestroy)
+    			end
+    		end
+    		for _, action in ipairs(redoStack) do
+    			if action.OnDestroy then
+    				pcall(action.OnDestroy)
+    			end
+    		end
+    		table.clear(undoStack)
+    		table.clear(redoStack)
+    	end
+    
+    	return History
     end
     
     return {
@@ -25594,7 +26674,7 @@ end,
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename, History--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -25613,7 +26693,11 @@ DefaultSettings = (function()
 			GuiSelectionBox = true,
 			CopyPathUseGetChildren = true,
 			ViewportContextMenuEnabled = true,
-			ViewportContextMenuTrigger = "Middle Click"
+			ViewportContextMenuTrigger = "Middle Click",
+			ViewportContextMenuMaxPanels = 10,
+			ViewportContextMenuDistanceCloseTime = 10,
+			ViewportContextMenuMaxDistance = 50,
+			ViewportContextMenu2DFallbackDistance = 50
 		},
 		Properties = {
 			_Recurse = true,
@@ -26054,7 +27138,7 @@ Main = (function()
 		end
 	end
 
-	Main.ModuleList = {"Theme","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename"}
+	Main.ModuleList = {"Theme","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
 	Main.ModulePathMap = {
 		Theme = "Core/Theme",
 		Lib = "Core/Lib",
@@ -26101,6 +27185,7 @@ Main = (function()
 		PropertyCopier = "Explorer/PropertyCopier",
 		PropertyRestorer = "Explorer/PropertyRestorer",
 		Rename = "Explorer/Rename",
+		History = "Explorer/History",
 	}
 	Main.Elevated = false
 	Main.AllowDraggableOnMobile = true
@@ -26534,6 +27619,7 @@ Main = (function()
 		PropertyCopier = Apps.PropertyCopier
 		PropertyRestorer = Apps.PropertyRestorer
 		Rename = Apps.Rename
+		History = Apps.History
 
 
 		--SecretServicePanel = Apps.SecretServicePanel
@@ -26575,7 +27661,8 @@ Main = (function()
 			Deletion = Deletion,
 			PropertyCopier = PropertyCopier,
 			PropertyRestorer = PropertyRestorer,
-			Rename = Rename
+			Rename = Rename,
+			History = History
 		}
 
 		Main.AppControls.Lib.InitAfterMain(appTable)
@@ -27821,9 +28908,16 @@ Main = (function()
 				end
 
 				local deserializedData = recur(decoded)
-				for k, v in pairs(deserializedData) do
-					Settings[k] = v
+				local function merge(target, source)
+					for k, v in pairs(source) do
+						if type(v) == "table" and type(target[k]) == "table" then
+							merge(target[k], v)
+						else
+							target[k] = v
+						end
+					end
 				end
+				merge(Settings, deserializedData)
 				applyModernThemeDefaults()
 			else
 				warn("failed to decode settings json")

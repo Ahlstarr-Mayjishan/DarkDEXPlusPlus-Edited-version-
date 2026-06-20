@@ -52,11 +52,17 @@ local function main()
 		local function undo()
 			for _, item in ipairs(deletedInstances) do
 				pcall(function() item.Obj.Parent = item.OriginalParent end)
+				if Apps.Explorer and Apps.Explorer.AddObject then
+					pcall(Apps.Explorer.AddObject, item.Obj)
+				end
 			end
 		end
 
 		local function redo()
 			for _, item in ipairs(deletedInstances) do
+				if Apps.Explorer and Apps.Explorer.RemoveObject then
+					pcall(Apps.Explorer.RemoveObject, item.Obj)
+				end
 				pcall(function() item.Obj.Parent = nil end)
 			end
 		end
@@ -105,11 +111,17 @@ local function main()
 		local function undo()
 			for _, item in ipairs(deletedInstances) do
 				pcall(function() item.Obj.Parent = item.OriginalParent end)
+				if Apps.Explorer and Apps.Explorer.AddObject then
+					pcall(Apps.Explorer.AddObject, item.Obj)
+				end
 			end
 		end
 
 		local function redo()
 			for _, item in ipairs(deletedInstances) do
+				if Apps.Explorer and Apps.Explorer.RemoveObject then
+					pcall(Apps.Explorer.RemoveObject, item.Obj)
+				end
 				pcall(function() item.Obj.Parent = nil end)
 			end
 		end

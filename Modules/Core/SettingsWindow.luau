@@ -371,6 +371,50 @@ local function main()
 				Explorer.UpdateViewportListener()
 			end
 		end)
+
+		local viewportMaxPanels = AddTextbox("Max 3D Panels (0 = Unlim)", tostring(Settings.Explorer.ViewportContextMenuMaxPanels or 10), 45)
+		viewportMaxPanels.FocusLost:Connect(function()
+			local num = tonumber(viewportMaxPanels.Text)
+			if num then
+				Settings.Explorer.ViewportContextMenuMaxPanels = math.max(0, math.floor(num))
+				viewportMaxPanels.Text = tostring(Settings.Explorer.ViewportContextMenuMaxPanels)
+			else
+				viewportMaxPanels.Text = tostring(Settings.Explorer.ViewportContextMenuMaxPanels or 10)
+			end
+		end)
+
+		local viewportCloseDelay = AddTextbox("3D Panel Close Delay (0 = Perm)", tostring(Settings.Explorer.ViewportContextMenuDistanceCloseTime or 10), 45)
+		viewportCloseDelay.FocusLost:Connect(function()
+			local num = tonumber(viewportCloseDelay.Text)
+			if num then
+				Settings.Explorer.ViewportContextMenuDistanceCloseTime = math.max(0, num)
+				viewportCloseDelay.Text = tostring(Settings.Explorer.ViewportContextMenuDistanceCloseTime)
+			else
+				viewportCloseDelay.Text = tostring(Settings.Explorer.ViewportContextMenuDistanceCloseTime or 10)
+			end
+		end)
+
+		local viewportMaxDist = AddTextbox("3D Panel Max Distance (0 = Inf)", tostring(Settings.Explorer.ViewportContextMenuMaxDistance or 50), 45)
+		viewportMaxDist.FocusLost:Connect(function()
+			local num = tonumber(viewportMaxDist.Text)
+			if num then
+				Settings.Explorer.ViewportContextMenuMaxDistance = math.max(0, num)
+				viewportMaxDist.Text = tostring(Settings.Explorer.ViewportContextMenuMaxDistance)
+			else
+				viewportMaxDist.Text = tostring(Settings.Explorer.ViewportContextMenuMaxDistance or 50)
+			end
+		end)
+
+		local fallbackDist = AddTextbox("2D Fallback Distance (0 = Inf)", tostring(Settings.Explorer.ViewportContextMenu2DFallbackDistance or 50), 45)
+		fallbackDist.FocusLost:Connect(function()
+			local num = tonumber(fallbackDist.Text)
+			if num then
+				Settings.Explorer.ViewportContextMenu2DFallbackDistance = math.max(0, num)
+				fallbackDist.Text = tostring(Settings.Explorer.ViewportContextMenu2DFallbackDistance)
+			else
+				fallbackDist.Text = tostring(Settings.Explorer.ViewportContextMenu2DFallbackDistance or 50)
+			end
+		end)
 		
 		AddSeperator("Properties")
 
