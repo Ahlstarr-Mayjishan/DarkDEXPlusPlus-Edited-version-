@@ -13359,7 +13359,7 @@ end,
     local function main()
     	local Properties = {}
     
-    	local window, toolBar, propsFrame
+    	local window, toolBar, propsFrame, guiItems
     	local scrollV, scrollH
     	local refreshScheduled = false
     	local function requestRefresh()
@@ -15264,7 +15264,7 @@ end,
     		expanded["Sound.SoundId"] = true
     
     		-- Create GUI elements
-    		local guiItems = Properties.CreateToolbar()
+    		guiItems = Properties.CreateToolbar()
     
     		-- Initialize window
     		window = Lib.Window.new()

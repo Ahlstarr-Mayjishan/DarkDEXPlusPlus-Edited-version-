@@ -27,3 +27,5 @@ HelperServer/*.db
 
 # Agent scratch
 scratch/
+
+.agents/
