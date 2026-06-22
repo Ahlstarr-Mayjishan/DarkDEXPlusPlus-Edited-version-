@@ -1,0 +1,43 @@
+---
+alwaysApply: true
+---
+
+---
+description: Code quality guardrails - minimalism, no overengineering, principled implementations
+alwaysApply: true
+---
+
+# Code Quality Guardrails
+
+## Avoid Over-Engineering
+- Only make changes that are directly requested or clearly necessary.
+- Keep solutions simple and focused.
+- Do not add features, refactor code, or make improvements beyond what was asked.
+- A bug fix does not need surrounding cleanup.
+- A simple feature does not need extra configurability.
+
+## Documentation Discipline
+- Do not add docstrings, comments, or type annotations to code you did not change.
+- Only add comments where the logic is not self-evident.
+- Prefer self-explanatory code over explanatory comments.
+
+## Defensive Coding
+- Do not add error handling, fallbacks, or validation for scenarios that cannot happen.
+- Trust internal code and framework guarantees.
+- Only validate at system boundaries: user input, external APIs, file I/O, network.
+
+## Abstractions
+- Do not create helpers, utilities, or abstractions for one-time operations.
+- Do not design for hypothetical future requirements.
+- The right amount of complexity is the minimum needed for the current task.
+
+## General-Purpose Solutions
+- Write high-quality, general-purpose solutions using standard tools.
+- Do not create helper scripts or workarounds just to pass tests faster.
+- Do not hard-code values or create solutions that only work for specific test inputs.
+- Focus on implementing the actual logic that solves the problem generally.
+- If the task is unreasonable, infeasible, or tests are wrong, say so instead of working around it.
+
+## Self-Check
+- Before finishing, verify the solution against the actual requirements, not just the tests.
+- Tests verify correctness; they do not define the entire solution.

@@ -8,7 +8,7 @@
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, SettingsWindow, Notebook -- Major Apps
+local Explorer, Properties, Notepad, SettingsWindow -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -31,8 +31,7 @@ local function initAfterMain()
 	Properties = Apps.Properties
 	Notepad = Apps.Notepad
 	SettingsWindow = Apps.SettingsWindow
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local SettingsWindow = {}
@@ -55,25 +54,35 @@ local function main()
 		
 		-- Checkbox
 		local checkbox = Lib.Checkbox.new()
-		
 		checkbox.Gui.Parent = frame.Gui
 		checkbox.Gui.Size = UDim2.new(0,15,0,15)
 		
 		-- Label
 		local label = Lib.Label.new()
-		
 		label.Gui.Parent = frame.Gui
 		label.Gui.Size = UDim2.new(1, 0,1, -15)
 		label.Gui.Text = title
 		label.TextTruncate = Enum.TextTruncate.AtEnd
 		
-		checkbox:SetState(default or false)
+		if type(default) == "table" and default.onChange then
+			checkbox:SetState(default:get())
+			default:onChange(function(val)
+				checkbox:SetState(val)
+			end)
+			checkbox.OnInput:Connect(function()
+				default:set(checkbox.Toggled)
+			end)
+		else
+			checkbox:SetState(default or false)
+		end
 		
 		return checkbox
 	end
 	
 	local function AddTextbox(title, default, sizeX)
-		default = default and tostring(default) or ""
+		local isState = type(default) == "table" and default.onChange
+		local defaultVal = isState and tostring(default:get()) or (default and tostring(default) or "")
+
 		local frame = Lib.Frame.new()
 		frame.Gui.Parent = ListFrame
 		frame.Gui.Transparency = 1
@@ -108,13 +117,21 @@ local function main()
 
 		-- Label
 		local label = Lib.Label.new()
-
 		label.Parent = frame.Gui
 		label.Size = UDim2.new(1, 0,1, -15)
 		label.Text = title
 		label.TextTruncate = Enum.TextTruncate.AtEnd
 
-		textbox.Text = default
+		textbox.Text = defaultVal
+
+		if isState then
+			default:onChange(function(val)
+				textbox.Text = tostring(val)
+			end)
+			textbox.FocusLost:Connect(function()
+				default:set(textbox.Text)
+			end)
+		end
 
 		return textbox
 	end
@@ -302,35 +319,40 @@ local function main()
 		
 		AddSeperator("UI")
 		
-		local titleonmiddle = AddCheckbox("Window Title On Middle", Settings.Window.TitleOnMiddle)
-		titleonmiddle.OnInput:Connect(function()
-			Settings.Window.TitleOnMiddle = titleonmiddle.Toggled
+		local titleOnMiddleState = Lib.State(Settings.Window.TitleOnMiddle)
+		titleOnMiddleState:onChange(function(val)
+			Settings.Window.TitleOnMiddle = val
 		end)
+		local titleonmiddle = AddCheckbox("Window Title On Middle", titleOnMiddleState)
 		
-		local autocheckupdate = AddCheckbox("Auto Check Update", Settings.AutoCheckUpdate ~= false)
-		autocheckupdate.OnInput:Connect(function()
-			Settings.AutoCheckUpdate = autocheckupdate.Toggled
+		local autoCheckUpdateState = Lib.State(Settings.AutoCheckUpdate ~= false)
+		autoCheckUpdateState:onChange(function(val)
+			Settings.AutoCheckUpdate = val
 		end)
+		local autocheckupdate = AddCheckbox("Auto Check Update", autoCheckUpdateState)
 
-		local updateRef = AddTextbox("Update Ref (tag recommended)", Settings.AutoUpdateRef or "v3.1", 120)
-		updateRef.FocusLost:Connect(function()
-			local ref = tostring(updateRef.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-			if ref == "" then
-				ref = "v3.1"
-				updateRef.Text = ref
-			end
+		local updateRefState = Lib.State(Settings.AutoUpdateRef or "v3.1")
+		updateRefState:onChange(function(val)
+			local ref = tostring(val):gsub("^%s+", ""):gsub("%s+$", "")
+			if ref == "" then ref = "v3.1" end
 			Settings.AutoUpdateRef = ref
 		end)
+		local updateRef = AddTextbox("Update Ref (tag recommended)", updateRefState, 120)
 
-		local allowBranchUpdate = AddCheckbox("Allow Main/Master Update Ref", Settings.AutoUpdateAllowBranch == true)
-		allowBranchUpdate.OnInput:Connect(function()
-			Settings.AutoUpdateAllowBranch = allowBranchUpdate.Toggled
+		local allowBranchUpdateState = Lib.State(Settings.AutoUpdateAllowBranch == true)
+		allowBranchUpdateState:onChange(function(val)
+			Settings.AutoUpdateAllowBranch = val
 		end)
+		local allowBranchUpdate = AddCheckbox("Allow Main/Master Update Ref", allowBranchUpdateState)
 		
-		local bgTransparency = AddTextbox("Background Transparency", tostring(Settings.Window.Transparency), 15)
-		bgTransparency.FocusLost:Connect(function()
-			Settings.Window.Transparency = tonumber(bgTransparency.Text)
+		local bgTransparencyState = Lib.State(tostring(Settings.Window.Transparency))
+		bgTransparencyState:onChange(function(val)
+			local num = tonumber(val)
+			if num then
+				Settings.Window.Transparency = num
+			end
 		end)
+		local bgTransparency = AddTextbox("Background Transparency", bgTransparencyState, 15)
 		
 		local classIcon = AddDropdown("Class Icons", {"Old", "NewDark", "Vanilla3"}, Settings.ClassIcon, false, 100)
 		classIcon.OnSelect:Connect(function()
@@ -339,35 +361,40 @@ local function main()
 		
 		AddSeperator("Explorer")
 		
-		local clickRename = AddCheckbox("Click to Rename", Settings.Explorer.ClickToRename)
-		clickRename.OnInput:Connect(function()
-			Settings.Explorer.ClickToRename = clickRename.Toggled
+		local clickRenameState = Lib.State(Settings.Explorer.ClickToRename)
+		clickRenameState:onChange(function(val)
+			Settings.Explorer.ClickToRename = val
 		end)
+		local clickRename = AddCheckbox("Click to Rename", clickRenameState)
 		
-		local partSelectionBox = AddCheckbox("Part Selection Box", Settings.Explorer.PartSelectionBox)
-		partSelectionBox.OnInput:Connect(function()
-			Settings.Explorer.PartSelectionBox = partSelectionBox.Toggled
+		local partSelectionBoxState = Lib.State(Settings.Explorer.PartSelectionBox)
+		partSelectionBoxState:onChange(function(val)
+			Settings.Explorer.PartSelectionBox = val
 		end)
+		local partSelectionBox = AddCheckbox("Part Selection Box", partSelectionBoxState)
 		
-		local copypathUseChildren = AddCheckbox("Use GetChildren to Copy Path", Settings.Explorer.CopyPathUseGetChildren)
-		copypathUseChildren.OnInput:Connect(function()
-			Settings.Explorer.CopyPathUseGetChildren = copypathUseChildren.Toggled
+		local copypathUseChildrenState = Lib.State(Settings.Explorer.CopyPathUseGetChildren)
+		copypathUseChildrenState:onChange(function(val)
+			Settings.Explorer.CopyPathUseGetChildren = val
 		end)
+		local copypathUseChildren = AddCheckbox("Use GetChildren to Copy Path", copypathUseChildrenState)
 		
-		local spoofAntiCheat = AddCheckbox("Anti-Cheat Spoofing (Stealth)", Settings.Explorer.AntiCheatSpoofing == true)
-		spoofAntiCheat.OnInput:Connect(function()
-			Settings.Explorer.AntiCheatSpoofing = spoofAntiCheat.Toggled
+		local spoofAntiCheatState = Lib.State(Settings.Explorer.AntiCheatSpoofing == true)
+		spoofAntiCheatState:onChange(function(val)
+			Settings.Explorer.AntiCheatSpoofing = val
 		end)
+		local spoofAntiCheat = AddCheckbox("Anti-Cheat Spoofing (Stealth)", spoofAntiCheatState)
 
 		AddSeperator("Viewport Interaction")
 
-		local viewportMenuEnabled = AddCheckbox("Viewport Context Menu", Settings.Explorer.ViewportContextMenuEnabled)
-		viewportMenuEnabled.OnInput:Connect(function()
-			Settings.Explorer.ViewportContextMenuEnabled = viewportMenuEnabled.Toggled
+		local viewportMenuEnabledState = Lib.State(Settings.Explorer.ViewportContextMenuEnabled)
+		viewportMenuEnabledState:onChange(function(val)
+			Settings.Explorer.ViewportContextMenuEnabled = val
 			if Explorer and Explorer.UpdateViewportListener then
 				Explorer.UpdateViewportListener()
 			end
 		end)
+		local viewportMenuEnabled = AddCheckbox("Viewport Context Menu", viewportMenuEnabledState)
 
 		local viewportMenuTrigger = AddDropdown("Viewport Menu Trigger", {"Right Click", "Middle Click"}, Settings.Explorer.ViewportContextMenuTrigger, false, 100)
 		viewportMenuTrigger.OnSelect:Connect(function()

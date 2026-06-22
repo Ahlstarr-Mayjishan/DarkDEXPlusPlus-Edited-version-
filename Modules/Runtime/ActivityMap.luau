@@ -4,7 +4,7 @@
 	Shows recent live instance churn and RuntimeInspector remote activity.
 ]]
 local Main,Lib,Apps,Settings
-local Explorer, RuntimeInspector, ActivityMap, Notebook
+local Explorer, RuntimeInspector, ActivityMap
 local API,RMD,env,service,plr,create,createSimple
 
 local function initDeps(data)
@@ -17,8 +17,7 @@ local function initAfterMain()
 	Explorer = Apps.Explorer
 	RuntimeInspector = Apps.RuntimeInspector
 	ActivityMap = Apps.ActivityMap
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local ActivityMap = {}
@@ -29,12 +28,7 @@ local function main()
 	local maxEvents = 160
 
 	local function getPath(obj)
-        if Main and Main.SafeGetInstancePath then return Main.SafeGetInstancePath(obj) end
-		local ok, path = pcall(function()
-			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(obj) end
-			return obj:GetFullName()
-		end)
-		return ok and tostring(path) or tostring(obj)
+		return Lib.getSafePath(obj)
 	end
 	local function clearRows()
 		for _, child in pairs(listFrame:GetChildren()) do

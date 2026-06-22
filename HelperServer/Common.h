@@ -32,6 +32,7 @@
 #include <wininet.h>
 
 #define DEFAULT_PORT "8080"
+static const wchar_t* WORKSPACE_SYNC_DIR = L"workspace_sync";
 #define BUFFER_SIZE 8192
 #define MAX_HEADER_SIZE 32768
 #define MAX_BODY_SIZE 5242880

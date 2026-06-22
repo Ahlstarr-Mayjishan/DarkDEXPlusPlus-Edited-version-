@@ -7,7 +7,7 @@
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, ModelViewer, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, Notebook -- Major Apps
+local Explorer, Properties, Notepad, ModelViewer, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -36,8 +36,7 @@ local function initAfterMain()
 	ImageViewer = Apps.ImageViewer
 	SoundViewer = Apps.SoundViewer
 	AnimationViewer = Apps.AnimationViewer
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local Explorer = {}
@@ -73,7 +72,7 @@ local function main()
 
 	local iconData
 	local remote_blocklist = {} -- list of remotes beng blocked, k = the remote instance, v = their old function :3
-	nodes = nodes or {}
+	local nodes = {}
 
 	local function withExplorerAccess(fn,...)
 		local oldIdentity
@@ -136,21 +135,21 @@ local function main()
 
 		local isNil = false
 		local rootParObj = ffa(root,"Instance")
-		local par = nodes[rootParObj]
+		local parentNode = nodes[rootParObj]
 
 		-- Nil Handling
-		if not par then
+		if not parentNode then
 			if nilMap[root] then
 				nilCons[root] = nilCons[root] or {
 					connectSignal(root.ChildAdded,safeCallback(addObject)),
 					connectSignal(root.AncestryChanged,safeCallback(moveObject)),
 				}
-				par = nilNode
+				parentNode = nilNode
 				isNil = true
 			else
 				return
 			end
-		elseif nilMap[rootParObj] or par == nilNode then
+		elseif nilMap[rootParObj] or parentNode == nilNode then
 			nilMap[root] = true
 			nilCons[root] = nilCons[root] or {
 				connectSignal(root.ChildAdded,safeCallback(addObject)),
@@ -159,12 +158,12 @@ local function main()
 			isNil = true
 		end
 
-		local newNode = {Obj = root, Parent = par}
+		local newNode = {Obj = root, Parent = parentNode}
 		nodes[root] = newNode
 
 		-- Automatic sorting if expanded
-		if sortingEnabled and expanded[par] and par.Sorted then
-			local left,right = 1,#par
+		if sortingEnabled and expanded[parentNode] and parentNode.Sorted then
+			local left,right = 1,#parentNode
 			local floor = math.floor
 			local sorter = Explorer.NodeSorter
 			local pos = (right == 0 and 1)
@@ -172,7 +171,7 @@ local function main()
 			if not pos then
 				while true do
 					if left >= right then
-						if sorter(newNode,par[left]) then
+						if sorter(newNode,parentNode[left]) then
 							pos = left
 						else
 							pos = left+1
@@ -181,7 +180,7 @@ local function main()
 					end
 
 					local mid = floor((left+right)/2)
-					if sorter(newNode,par[mid]) then
+					if sorter(newNode,parentNode[mid]) then
 						right = mid-1
 					else
 						left = mid+1
@@ -189,10 +188,10 @@ local function main()
 				end
 			end
 
-			table.insert(par,pos,newNode)
+			table.insert(parentNode,pos,newNode)
 		else
-			par[#par+1] = newNode
-			par.Sorted = nil
+			parentNode[#parentNode+1] = newNode
+			parentNode.Sorted = nil
 		end
 
 		local insts = getDescendants(root)
@@ -200,11 +199,11 @@ local function main()
 			local obj = insts[i]
 			if nodes[obj] then continue end -- Deferred
 
-			local par = nodes[ffa(obj,"Instance")]
-			if not par then continue end
-			local newNode = {Obj = obj, Parent = par}
+			local descendantParent = nodes[ffa(obj,"Instance")]
+			if not descendantParent then continue end
+			local newNode = {Obj = obj, Parent = descendantParent}
 			nodes[obj] = newNode
-			par[#par+1] = newNode
+			descendantParent[#descendantParent+1] = newNode
 
 			-- Nil Handling
 			if isNil then
@@ -1041,6 +1040,12 @@ local function main()
 		if descendantAddedCon then descendantAddedCon:Disconnect() descendantAddedCon = nil end
 		if descendantRemovingCon then descendantRemovingCon:Disconnect() descendantRemovingCon = nil end
 		if itemChangedCon then itemChangedCon:Disconnect() itemChangedCon = nil end
+		if delCleanerThread then
+			if coroutine.status(delCleanerThread) == "suspended" or coroutine.status(delCleanerThread) == "running" then
+				coroutine.close(delCleanerThread)
+			end
+			delCleanerThread = nil
+		end
 	end
 
 	Explorer.ViewNode = function(node)
@@ -1307,22 +1312,18 @@ local function main()
 		if presentClasses["ClickDetector"] then context:AddRegistered("FIRE_CLICKDETECTOR", fireclickdetector == nil) end
 		if presentClasses["ProximityPrompt"] then context:AddRegistered("FIRE_PROXIMITYPROMPT", fireproximityprompt == nil) end
 
-
-		if presentClasses["RemoteEvent"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-		if presentClasses["RemoteEvent"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-
-		if presentClasses["RemoteFunction"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-		if presentClasses["RemoteFunction"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-
-		if presentClasses["UnreliableRemoteEvent"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-		if presentClasses["UnreliableRemoteEvent"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-
-
-		if presentClasses["BindableEvent"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-		if presentClasses["BindableEvent"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-
-		if presentClasses["BindableFunction"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-		if presentClasses["BindableFunction"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
+		local blockableClasses = {"RemoteEvent", "RemoteFunction", "UnreliableRemoteEvent", "BindableEvent", "BindableFunction"}
+		local hasBlockable = false
+		for _, className in ipairs(blockableClasses) do
+			if presentClasses[className] then
+				hasBlockable = true
+				break
+			end
+		end
+		if hasBlockable then
+			context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil)
+			context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil)
+		end
 
 		if presentClasses["RemoteEvent"] or presentClasses["RemoteFunction"] or presentClasses["UnreliableRemoteEvent"] or presentClasses["BindableEvent"] or presentClasses["BindableFunction"] then
 			context:AddRegistered("VIEW_REMOTE_USAGE", #sList ~= 1 or not RemoteUsageMap)
@@ -2138,8 +2139,10 @@ return search]==]
 		Explorer.ClickSystem = sys
 	end
 
+	local delCleanerThread = nil
+
 	Explorer.InitDelCleaner = function()
-		coroutine.wrap(function()
+		delCleanerThread = coroutine.create(function()
 			local fw = Lib.FastWait
 			while true do
 				local processed = false
@@ -2178,7 +2181,8 @@ return search]==]
 				if processed and not refreshDebounce then scheduleExplorerPaint(false) end
 				fw(0.5)
 			end
-		end)()
+		end)
+		coroutine.resume(delCleanerThread)
 	end
 
 	Explorer.UpdateSelectionVisuals = function()

@@ -4,7 +4,7 @@
 	Correlates Remote calls with RakNet outbound packet activity.
 ]]
 local Main,Lib,Apps,Settings
-local Explorer, Properties, Notepad, RuntimeInspector, RemoteUsageMap, Notebook
+local Explorer, Properties, Notepad, RuntimeInspector, RemoteUsageMap
 local API,RMD,env,service,plr,create,createSimple
 local function initDeps(data)
 	Main = data.Main
@@ -25,8 +25,7 @@ local function initAfterMain()
 	Notepad = Apps.Notepad
 	RuntimeInspector = Apps.RuntimeInspector
 	RemoteUsageMap = Apps.RemoteUsageMap
-	Notebook = Apps.Notebook
-end
+	end
 local function main()
 	local RuntimeInspector = {}
 	local window, listFrame, statusLabel
@@ -52,12 +51,7 @@ local function main()
 		end
 	end
 	local function getPath(obj)
-        if Main and Main.SafeGetInstancePath then return Main.SafeGetInstancePath(obj) end
-		local success, path = pcall(function()
-			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(obj) end
-			return obj:GetFullName()
-		end)
-		return success and tostring(path) or tostring(obj)
+		return Lib.getSafePath(obj)
 	end
 	local function summarizeValue(value, depth)
 		depth = depth or 0

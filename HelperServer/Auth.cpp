@@ -1,4 +1,5 @@
 #include "Auth.h"
+#include "SecureStore.h"
 
 // Forward declaration of escape_json to avoid circular header dependencies
 std::string escape_json(const std::string& value);
@@ -119,6 +120,43 @@ std::string unescape_json(const std::string& val) {
     return res;
 }
 
+namespace {
+
+std::string read_secure_file(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return "";
+    }
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    return secure_unprotect(buffer.str());
+}
+
+void write_secure_file(const std::string& path, const std::string& value) {
+    if (value.empty()) {
+        std::remove(path.c_str());
+        return;
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (file.is_open()) {
+        file << secure_protect(value);
+    }
+}
+
+std::string read_secure_line_file(const std::string& path) {
+    std::string stored = read_secure_file(path);
+    if (stored.empty()) {
+        return "";
+    }
+    const size_t newline = stored.find('\n');
+    if (newline != std::string::npos) {
+        stored.resize(newline);
+    }
+    return stored;
+}
+
+} // namespace
+
 std::string extract_json_field(const std::string& json, const std::string& field) {
     size_t pos = json.find("\"" + field + "\"");
     if (pos == std::string::npos) return "";
@@ -224,140 +262,46 @@ std::string get_openai_profile_response(const std::string& token) {
 }
 
 void load_auth_credentials() {
-    std::ifstream f1("dex_roblox_cookie.dat");
-    if (f1.is_open()) {
-        std::getline(f1, g_roblox_cookie);
-        f1.close();
-    }
-    std::ifstream f2("dex_github_token.dat");
-    if (f2.is_open()) {
-        std::getline(f2, g_github_token);
-        f2.close();
-    }
-    std::ifstream f6("dex_google_api_key.dat");
-    if (f6.is_open()) {
-        std::getline(f6, g_google_api_key);
-        f6.close();
-    }
-    std::ifstream f7("dex_openai_api_key.dat");
-    if (f7.is_open()) {
-        std::getline(f7, g_openai_api_key);
-        f7.close();
-    }
-    
-    std::ifstream f4("dex_google_oauth_token.dat");
-    if (f4.is_open()) {
-        std::getline(f4, g_google_oauth_token);
-        f4.close();
-    }
-    std::ifstream f5("dex_github_oauth_token.dat");
-    if (f5.is_open()) {
-        std::getline(f5, g_github_oauth_token);
-        f5.close();
+    g_roblox_cookie = read_secure_line_file("dex_roblox_cookie.dat");
+    g_github_token = read_secure_line_file("dex_github_token.dat");
+    g_google_api_key = read_secure_line_file("dex_google_api_key.dat");
+    g_openai_api_key = read_secure_line_file("dex_openai_api_key.dat");
+    g_google_oauth_token = read_secure_line_file("dex_google_oauth_token.dat");
+    g_github_oauth_token = read_secure_line_file("dex_github_oauth_token.dat");
+
+    const std::string oauth_config = read_secure_file("dex_oauth_config.dat");
+    if (!oauth_config.empty()) {
+        std::stringstream config(oauth_config);
+        if (!std::getline(config, g_google_client_id)) g_google_client_id = "";
+        if (!std::getline(config, g_google_client_secret)) g_google_client_secret = "";
+        if (!std::getline(config, g_github_client_id)) g_github_client_id = "";
+        if (!std::getline(config, g_github_client_secret)) g_github_client_secret = "";
     }
 
-    std::ifstream f3("dex_oauth_config.dat");
-    if (f3.is_open()) {
-        if (!std::getline(f3, g_google_client_id)) g_google_client_id = "";
-        if (!std::getline(f3, g_google_client_secret)) g_google_client_secret = "";
-        if (!std::getline(f3, g_github_client_id)) g_github_client_id = "";
-        if (!std::getline(f3, g_github_client_secret)) g_github_client_secret = "";
-        f3.close();
-    }
-
-    std::ifstream f_accounts("dex_accounts.dat");
-    if (f_accounts.is_open()) {
-        std::stringstream buffer;
-        buffer << f_accounts.rdbuf();
-        g_accounts_json = buffer.str();
-        f_accounts.close();
-        if (g_accounts_json.empty() || g_accounts_json.find("{") == std::string::npos) {
-            g_accounts_json = "{\"roblox\":[],\"github\":[],\"google\":[],\"openai\":[]}";
-        }
+    g_accounts_json = read_secure_file("dex_accounts.dat");
+    if (g_accounts_json.empty() || g_accounts_json.find("{") == std::string::npos) {
+        g_accounts_json = "{\"roblox\":[],\"github\":[],\"google\":[],\"openai\":[]}";
     }
 }
 
 void save_auth_credentials() {
-    if (!g_roblox_cookie.empty()) {
-        std::ofstream f1("dex_roblox_cookie.dat", std::ios::trunc);
-        if (f1.is_open()) {
-            f1 << g_roblox_cookie;
-            f1.close();
-        }
-    } else {
-        std::remove("dex_roblox_cookie.dat");
-    }
-    
-    if (!g_github_token.empty()) {
-        std::ofstream f2("dex_github_token.dat", std::ios::trunc);
-        if (f2.is_open()) {
-            f2 << g_github_token;
-            f2.close();
-        }
-    } else {
-        std::remove("dex_github_token.dat");
-    }
-
-    if (!g_google_api_key.empty()) {
-        std::ofstream f6("dex_google_api_key.dat", std::ios::trunc);
-        if (f6.is_open()) {
-            f6 << g_google_api_key;
-            f6.close();
-        }
-    } else {
-        std::remove("dex_google_api_key.dat");
-    }
-
-    if (!g_openai_api_key.empty()) {
-        std::ofstream f7("dex_openai_api_key.dat", std::ios::trunc);
-        if (f7.is_open()) {
-            f7 << g_openai_api_key;
-            f7.close();
-        }
-    } else {
-        std::remove("dex_openai_api_key.dat");
-    }
+    write_secure_file("dex_roblox_cookie.dat", g_roblox_cookie);
+    write_secure_file("dex_github_token.dat", g_github_token);
+    write_secure_file("dex_google_api_key.dat", g_google_api_key);
+    write_secure_file("dex_openai_api_key.dat", g_openai_api_key);
 
     if (!g_google_client_id.empty() || !g_google_client_secret.empty() || !g_github_client_id.empty() || !g_github_client_secret.empty()) {
-        std::ofstream f3("dex_oauth_config.dat", std::ios::trunc);
-        if (f3.is_open()) {
-            f3 << g_google_client_id << "\n"
+        std::stringstream config;
+        config << g_google_client_id << "\n"
                << g_google_client_secret << "\n"
                << g_github_client_id << "\n"
                << g_github_client_secret << "\n";
-            f3.close();
-        }
+        write_secure_file("dex_oauth_config.dat", config.str());
     } else {
-        std::remove("dex_oauth_config.dat");
+        write_secure_file("dex_oauth_config.dat", "");
     }
 
-    if (!g_google_oauth_token.empty()) {
-        std::ofstream f4("dex_google_oauth_token.dat", std::ios::trunc);
-        if (f4.is_open()) {
-            f4 << g_google_oauth_token;
-            f4.close();
-        }
-    } else {
-        std::remove("dex_google_oauth_token.dat");
-    }
-
-    if (!g_github_oauth_token.empty()) {
-        std::ofstream f5("dex_github_oauth_token.dat", std::ios::trunc);
-        if (f5.is_open()) {
-            f5 << g_github_oauth_token;
-            f5.close();
-        }
-    } else {
-        std::remove("dex_github_oauth_token.dat");
-    }
-
-    if (!g_accounts_json.empty()) {
-        std::ofstream f_accounts("dex_accounts.dat", std::ios::trunc);
-        if (f_accounts.is_open()) {
-            f_accounts << g_accounts_json;
-            f_accounts.close();
-        }
-    } else {
-        std::remove("dex_accounts.dat");
-    }
+    write_secure_file("dex_google_oauth_token.dat", g_google_oauth_token);
+    write_secure_file("dex_github_oauth_token.dat", g_github_oauth_token);
+    write_secure_file("dex_accounts.dat", g_accounts_json);
 }

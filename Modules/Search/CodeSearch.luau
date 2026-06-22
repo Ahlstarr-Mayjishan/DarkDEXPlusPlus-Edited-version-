@@ -10,7 +10,7 @@
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, CodeSearch, Notebook -- Major Apps
+local Explorer, Properties, Notepad, CodeSearch -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -33,13 +33,45 @@ local function initAfterMain()
 	Properties = Apps.Properties
 	Notepad = Apps.Notepad
 	CodeSearch = Apps.CodeSearch
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local CodeSearch = {}
 	local window, searchBox, statusLabel, resultsFrame, sidePanel, sideTitle, sidePath, sideMeta, sidePreview, sideBadges, lowImpactButton, allFilterButton, resultContextMenu
 	local indexing = false
+	local antiAfkConnection = nil
+
+	local function startAntiAfk()
+		if antiAfkConnection then return end
+		local Players = game:GetService("Players")
+		local VirtualUser = game:GetService("VirtualUser")
+		local localPlayer = Players.LocalPlayer
+		if localPlayer then
+			antiAfkConnection = localPlayer.Idled:Connect(function()
+				pcall(function()
+					VirtualUser:CaptureController()
+					VirtualUser:ClickButton2(Vector2.new(0, 0))
+				end)
+			end)
+		end
+	end
+
+	local function stopAntiAfk()
+		if antiAfkConnection then
+			antiAfkConnection:Disconnect()
+			antiAfkConnection = nil
+		end
+	end
+
+	local function setIndexing(state)
+		indexing = state
+		if state then
+			startAntiAfk()
+		else
+			stopAntiAfk()
+		end
+	end
+
 	local searching = false
 	local smartMode = false
 	local cancelRequested = false
@@ -1089,7 +1121,7 @@ local function main()
 			return
 		end
 
-		indexing = true
+		setIndexing(true)
 		local token = beginOperation()
 		reportTool({
 			State = "indexing",
@@ -1109,7 +1141,7 @@ local function main()
 			local lowImpact = isLowImpactIndex()
 
 			if total == 0 then
-				indexing = false
+				setIndexing(false)
 				setStatus("No decompilable scripts found.")
 				reportTool({State = "idle", Load = "low", Progress = 1, Total = 0})
 				return
@@ -1117,7 +1149,7 @@ local function main()
 
 			for i, scriptInstance in ipairs(scripts) do
 				if not indexing or shouldCancel(token) then
-					indexing = false
+					setIndexing(false)
 					setStatus(("Index stopped: %d cached, %d decompiled, %d failed, %d helper."):format(cached, decompiled, failed, helperIndexed))
 					reportTool({
 						State = "stopped",
@@ -1229,7 +1261,7 @@ local function main()
 				task.wait(0.08)
 			end
 
-			indexing = false
+			setIndexing(false)
 			if shouldCancel(token) then
 				setStatus(("Index stopped: %d cached, %d decompiled, %d failed, %d helper."):format(cached, decompiled, failed, helperIndexed))
 				reportTool({
@@ -1278,7 +1310,7 @@ local function main()
 		end
 		cancelRequested = true
 		operationId += 1
-		indexing = false
+		setIndexing(false)
 		searching = false
 		setStatus("Stopping current Code Search task...")
 		reportTool({State = "stopping", Load = "low"})

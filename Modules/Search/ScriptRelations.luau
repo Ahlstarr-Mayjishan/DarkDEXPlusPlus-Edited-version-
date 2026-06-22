@@ -5,7 +5,7 @@
 ]]
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, ScriptRelations, Notebook, DependencyGraph -- Major Apps
+local Explorer, Properties, Notepad, ScriptRelations, DependencyGraph -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 local function initDeps(data)
 	Main = data.Main
@@ -25,8 +25,7 @@ local function initAfterMain()
 	Properties = Apps.Properties
 	Notepad = Apps.Notepad
 	ScriptRelations = Apps.ScriptRelations
-	Notebook = Apps.Notebook
-	DependencyGraph = Apps.DependencyGraph
+		DependencyGraph = Apps.DependencyGraph
 end
 local function main()
 	local ScriptRelations = {}

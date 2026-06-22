@@ -6,10 +6,24 @@ selene.toml
 HelperWorkers/rust_source_analyzer/target/
 HelperWorkers/python/__pycache__/
 HelperServer/*.dat
+HelperServer/dex_*_cookie.dat
+HelperServer/dex_*_token.dat
+HelperServer/dex_*_api_key.dat
+HelperServer/dex_oauth_config.dat
+HelperServer/dex_accounts.dat
 HelperServer/dex_server_logs.txt
 HelperServer/DEX_Toolchain_Setup*.exe
 HelperServer/ToolchainTest.exe
 ToolchainSetup/*.exe
-HelperApp/bin/
-HelperApp/obj/
-HelperApp/app_error.log
+HelperApp(incompleted)/bin/
+HelperApp(incompleted)/obj/
+HelperApp(incompleted)/app_error.log
+
+# Build artifacts
+HelperServer/*.o
+HelperServer/DEX_Helper.exe
+HelperServer/DEX_Language_Manager.exe
+HelperServer/*.db
+
+# Agent scratch
+scratch/

@@ -6,7 +6,7 @@
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, SaveInstance, Notebook -- Major Apps
+local Explorer, Properties, Notepad, SaveInstance -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -29,8 +29,7 @@ local function initAfterMain()
 	Properties = Apps.Properties
 	Notepad = Apps.Notepad
 	SaveInstance = Apps.SaveInstance
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local SaveInstance = {}

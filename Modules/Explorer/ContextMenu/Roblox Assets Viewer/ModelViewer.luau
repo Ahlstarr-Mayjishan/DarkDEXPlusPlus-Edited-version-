@@ -6,7 +6,7 @@
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, ModelViewer, Notebook -- Major Apps
+local Explorer, Properties, Notepad, ModelViewer -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -28,8 +28,7 @@ local function initAfterMain()
 	Explorer = Apps.Explorer
 	Properties = Apps.Properties
 	Notepad = Apps.Notepad
-	Notebook = Apps.Notebook
-end
+	end
 
 local function getPath(obj)
     if Main and Main.SafeGetInstancePath then

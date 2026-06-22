@@ -5,7 +5,7 @@
 ]]
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, Notebook, SmartDecompiler -- Major Apps
+local Explorer, Properties, Notepad, SmartDecompiler -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -23,12 +23,11 @@ local function initDeps(data)
 	createSimple = data.createSimple
 end
 
-local function initAfterMain(t)
-	Explorer = t.Explorer
-	Properties = t.Properties
-	Notepad = t.Notepad
-	Notebook = t.Notebook
-	SmartDecompiler = t.SmartDecompiler
+local function initAfterMain()
+	Explorer = Apps.Explorer
+	Properties = Apps.Properties
+	Notepad = Apps.Notepad
+	SmartDecompiler = Apps.SmartDecompiler
 end
 
 local executorName = "Unknown"
@@ -43,15 +42,7 @@ elseif game:GetService("RunService"):IsStudio() then
 end
 
 local function getPath(obj)
-    if Main and Main.SafeGetInstancePath then
-        return Main.SafeGetInstancePath(obj)
-    end
-    if not obj then return "?" end
-    if obj.Parent == nil then return "Nil parented" end
-    local ok, fullName = pcall(function()
-        return obj:GetFullName()
-    end)
-    return ok and fullName or tostring(obj)
+    return Lib.getSafePath(obj)
 end
 
 local function main()

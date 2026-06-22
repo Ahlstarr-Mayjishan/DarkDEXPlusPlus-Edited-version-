@@ -5,6 +5,8 @@
 #include "Win32App.h"
 #include "Toolchain.h"
 #include "Decompiler.h"
+#include "HttpUtil.h"
+#include "Routes.h"
 
 // Link with ws2_32.lib
 #pragma comment(lib, "ws2_32.lib")
@@ -14,297 +16,11 @@
 std::atomic<int> g_active_clients{0};
 ULONGLONG g_last_mcp_time = 0;
 
-// Lightweight SHA-1 implementation
-namespace sha1 {
-    inline unsigned int rol(unsigned int value, unsigned int bits) {
-        return (value << bits) | (value >> (32 - bits));
-    }
-    inline void block(unsigned int* state, const unsigned char* block) {
-        unsigned int w[80];
-        for (int i = 0; i < 16; i++) {
-            w[i] = (block[i * 4] << 24) | (block[i * 4 + 1] << 16) | (block[i * 4 + 2] << 8) | (block[i * 4 + 3]);
-        }
-        for (int i = 16; i < 80; i++) {
-            w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-        }
-        unsigned int a = state[0], b = state[1], c = state[2], d = state[3], e = state[4];
-        for (int i = 0; i < 80; i++) {
-            unsigned int f, k;
-            if (i < 20) {
-                f = (b & c) | ((~b) & d);
-                k = 0x5A827999;
-            } else if (i < 40) {
-                f = b ^ c ^ d;
-                k = 0x6ED9EBA1;
-            } else if (i < 60) {
-                f = (b & c) | (b & d) | (c & d);
-                k = 0x8F1BBCDC;
-            } else {
-                f = b ^ c ^ d;
-                k = 0xCA62C1D6;
-            }
-            unsigned int temp = rol(a, 5) + f + e + k + w[i];
-            e = d;
-            d = c;
-            c = rol(b, 30);
-            b = a;
-            a = temp;
-        }
-        state[0] += a; state[1] += b; state[2] += c; state[3] += d; state[4] += e;
-    }
-    inline std::string hash(const std::string& input) {
-        unsigned int state[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
-        unsigned long long bit_len = input.size() * 8;
-        std::vector<unsigned char> data(input.begin(), input.end());
-        data.push_back(0x80);
-        while ((data.size() + 8) % 64 != 0) {
-            data.push_back(0x00);
-        }
-        for (int i = 7; i >= 0; i--) {
-            data.push_back(static_cast<unsigned char>((bit_len >> (i * 8)) & 0xFF));
-        }
-        for (size_t i = 0; i < data.size(); i += 64) {
-            block(state, &data[i]);
-        }
-        std::string result;
-        result.resize(20);
-        for (int i = 0; i < 5; i++) {
-            result[i * 4] = static_cast<char>((state[i] >> 24) & 0xFF);
-            result[i * 4 + 1] = static_cast<char>((state[i] >> 16) & 0xFF);
-            result[i * 4 + 2] = static_cast<char>((state[i] >> 8) & 0xFF);
-            result[i * 4 + 3] = static_cast<char>(state[i] & 0xFF);
-        }
-        return result;
-    }
-}
-
-// Lightweight Base64 implementation
-namespace base64 {
-    inline std::string encode(const std::string& input) {
-        static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        std::string result;
-        result.reserve((input.size() + 2) / 3 * 4);
-        int val = 0, valb = -6;
-        for (unsigned char c : input) {
-            val = (val << 8) + c;
-            valb += 8;
-            while (valb >= 0) {
-                result.push_back(alphabet[(val >> valb) & 0x3F]);
-                valb -= 6;
-            }
-        }
-        if (valb > -6) {
-            result.push_back(alphabet[((val << 8) >> (valb + 8)) & 0x3F]);
-        }
-        while (result.size() % 4 != 0) {
-            result.push_back('=');
-        }
-        return result;
-    }
-}
-
-// Send unmasked WebSocket text frame
-inline bool send_ws_text_frame(SOCKET client_socket, const std::string& payload) {
-    std::vector<char> frame;
-    frame.push_back(static_cast<char>(0x81)); // FIN + Text frame opcode
-    
-    size_t len = payload.size();
-    if (len <= 125) {
-        frame.push_back(static_cast<char>(len));
-    } else if (len <= 65535) {
-        frame.push_back(static_cast<char>(126));
-        frame.push_back(static_cast<char>((len >> 8) & 0xFF));
-        frame.push_back(static_cast<char>(len & 0xFF));
-    } else {
-        frame.push_back(static_cast<char>(127));
-        for (int i = 7; i >= 0; i--) {
-            frame.push_back(static_cast<char>((len >> (i * 8)) & 0xFF));
-        }
-    }
-    
-    frame.insert(frame.end(), payload.begin(), payload.end());
-    
-    size_t total_sent = 0;
-    while (total_sent < frame.size()) {
-        int sent = send(client_socket, frame.data() + total_sent, static_cast<int>(frame.size() - total_sent), 0);
-        if (sent == SOCKET_ERROR || sent == 0) {
-            return false;
-        }
-        total_sent += sent;
-    }
-    return true;
-}
-
-// Send HTTP response helper
-void send_response(SOCKET client_socket, int status_code, const std::string& status_text, const std::string& body, const std::string& content_type = "text/plain") {
-    std::stringstream response;
-    response << "HTTP/1.1 " << status_code << " " << status_text << "\r\n"
-             << "Content-Type: " << content_type << "\r\n"
-             << "Content-Length: " << body.length() << "\r\n"
-             << "Access-Control-Allow-Origin: *\r\n"
-             << "Access-Control-Allow-Headers: *\r\n"
-             << "Connection: close\r\n\r\n"
-             << body;
-
-    std::string response_str = response.str();
-    send(client_socket, response_str.c_str(), static_cast<int>(response_str.length()), 0);
-}
-
-void close_client(SOCKET client_socket) {
-    shutdown(client_socket, SD_SEND);
-    closesocket(client_socket);
-}
+#include "WsProtocol.h"
 
 std::mutex g_ws_mutex;
 SOCKET g_roblox_ws = INVALID_SOCKET;
 SOCKET g_dashboard_ws = INVALID_SOCKET;
-
-inline bool recv_all(SOCKET s, char* buf, int len) {
-    int total = 0;
-    while (total < len) {
-        int r = recv(s, buf + total, len - total, 0);
-        if (r <= 0) return false;
-        total += r;
-    }
-    return true;
-}
-
-inline bool read_ws_text_frame(SOCKET client_socket, std::string& out_payload) {
-    while (true) {
-        char header[2];
-        if (!recv_all(client_socket, header, 2)) {
-            int err = WSAGetLastError();
-            if (err != 0 && err != WSAEDISCON) {
-                std::cout << "WS Read: recv_all header failed, error: " << err << std::endl;
-            }
-            return false;
-        }
-        
-        unsigned char first_byte = header[0];
-        unsigned char second_byte = header[1];
-        
-        bool fin = (first_byte & 0x80) != 0;
-        unsigned char opcode = first_byte & 0x0F;
-        
-        if (opcode == 0x08) { // Close
-            std::cout << "WS Read: Received Close frame." << std::endl;
-            return false;
-        }
-        
-        bool masked = (second_byte & 0x80) != 0;
-        uint64_t payload_len = second_byte & 0x7F;
-        
-        if (payload_len == 126) {
-            char len_bytes[2];
-            if (!recv_all(client_socket, len_bytes, 2)) {
-                std::cout << "WS Read: recv_all len_bytes(126) failed" << std::endl;
-                return false;
-            }
-            payload_len = (static_cast<unsigned char>(len_bytes[0]) << 8) | static_cast<unsigned char>(len_bytes[1]);
-        } else if (payload_len == 127) {
-            char len_bytes[8];
-            if (!recv_all(client_socket, len_bytes, 8)) {
-                std::cout << "WS Read: recv_all len_bytes(127) failed" << std::endl;
-                return false;
-            }
-            payload_len = 0;
-            for (int i = 0; i < 8; i++) {
-                payload_len = (payload_len << 8) | static_cast<unsigned char>(len_bytes[i]);
-            }
-        }
-        
-        char mask_key[4] = {0};
-        if (masked) {
-            if (!recv_all(client_socket, mask_key, 4)) {
-                std::cout << "WS Read: recv_all mask_key failed" << std::endl;
-                return false;
-            }
-        }
-        
-        std::vector<char> buffer;
-        if (payload_len > 0) {
-            if (payload_len > 50 * 1024 * 1024) {
-                std::cout << "WS Read: Payload too large: " << payload_len << std::endl;
-                return false;
-            }
-            buffer.resize(payload_len);
-            if (!recv_all(client_socket, buffer.data(), static_cast<int>(payload_len))) {
-                std::cout << "WS Read: recv_all payload failed" << std::endl;
-                return false;
-            }
-            if (masked) {
-                for (size_t i = 0; i < payload_len; i++) {
-                    buffer[i] ^= mask_key[i % 4];
-                }
-            }
-        }
-        
-        if (opcode == 0x09) { // Ping
-            std::vector<char> pong_frame;
-            pong_frame.push_back(static_cast<char>(0x8A));
-            size_t len = buffer.size();
-            if (len <= 125) {
-                pong_frame.push_back(static_cast<char>(len));
-            } else if (len <= 65535) {
-                pong_frame.push_back(static_cast<char>(126));
-                pong_frame.push_back(static_cast<char>((len >> 8) & 0xFF));
-                pong_frame.push_back(static_cast<char>(len & 0xFF));
-            } else {
-                pong_frame.push_back(static_cast<char>(127));
-                for (int i = 7; i >= 0; i--) {
-                    pong_frame.push_back(static_cast<char>((len >> (i * 8)) & 0xFF));
-                }
-            }
-            pong_frame.insert(pong_frame.end(), buffer.begin(), buffer.end());
-            send(client_socket, pong_frame.data(), static_cast<int>(pong_frame.size()), 0);
-            continue;
-        }
-        
-        if (opcode == 0x0A) { // Pong
-            continue;
-        }
-        
-        if (opcode == 0x01 || opcode == 0x02 || opcode == 0x00) {
-            out_payload.assign(buffer.begin(), buffer.end());
-            return true;
-        }
-        
-        std::cout << "WS Read: Unknown opcode: " << static_cast<int>(opcode) << std::endl;
-        return false;
-    }
-}
-
-inline bool perform_ws_handshake(SOCKET ClientSocket, const std::string& request_headers) {
-    size_t key_pos = request_headers.find("Sec-WebSocket-Key:");
-    if (key_pos == std::string::npos) {
-        send_response(ClientSocket, 400, "Bad Request", "Missing Sec-WebSocket-Key");
-        close_client(ClientSocket);
-        return false;
-    }
-    size_t value_start = key_pos + 18;
-    while (value_start < request_headers.size() && std::isspace(static_cast<unsigned char>(request_headers[value_start]))) {
-        value_start++;
-    }
-    size_t value_end = request_headers.find("\r\n", value_start);
-    if (value_end == std::string::npos) value_end = request_headers.size();
-    std::string ws_key = request_headers.substr(value_start, value_end - value_start);
-    while (!ws_key.empty() && std::isspace(static_cast<unsigned char>(ws_key.back()))) {
-        ws_key.pop_back();
-    }
-    
-    std::string concat = ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    std::string sha1_hash = sha1::hash(concat);
-    std::string accept_key = base64::encode(sha1_hash);
-    
-    std::stringstream response;
-    response << "HTTP/1.1 101 Switching Protocols\r\n"
-             << "Upgrade: websocket\r\n"
-             << "Connection: Upgrade\r\n"
-             << "Sec-WebSocket-Accept: " << accept_key << "\r\n\r\n";
-    std::string hand_str = response.str();
-    send(ClientSocket, hand_str.data(), static_cast<int>(hand_str.size()), 0);
-    return true;
-}
 
 inline void handle_client_ws(SOCKET ClientSocket, const std::string& request_headers) {
     if (!perform_ws_handshake(ClientSocket, request_headers)) return;
@@ -322,14 +38,16 @@ inline void handle_client_ws(SOCKET ClientSocket, const std::string& request_hea
     std::string payload;
     while (read_ws_text_frame(ClientSocket, payload)) {
         SOCKET dash = INVALID_SOCKET;
+        bool dashValid = false;
         {
             std::lock_guard<std::mutex> lock(g_ws_mutex);
             dash = g_dashboard_ws;
+            dashValid = (dash != INVALID_SOCKET);
         }
-        if (dash != INVALID_SOCKET) {
-            if (!send_ws_text_frame(dash, payload)) {
-                std::lock_guard<std::mutex> lock(g_ws_mutex);
-                if (g_dashboard_ws == dash) {
+        if (dashValid) {
+            std::lock_guard<std::mutex> lock(g_ws_mutex);
+            if (g_dashboard_ws == dash) {
+                if (!send_ws_text_frame(dash, payload)) {
                     closesocket(g_dashboard_ws);
                     g_dashboard_ws = INVALID_SOCKET;
                 }
@@ -363,14 +81,16 @@ inline void handle_dashboard_ws(SOCKET ClientSocket, const std::string& request_
     std::string payload;
     while (read_ws_text_frame(ClientSocket, payload)) {
         SOCKET roblox = INVALID_SOCKET;
+        bool robloxValid = false;
         {
             std::lock_guard<std::mutex> lock(g_ws_mutex);
             roblox = g_roblox_ws;
+            robloxValid = (roblox != INVALID_SOCKET);
         }
-        if (roblox != INVALID_SOCKET) {
-            if (!send_ws_text_frame(roblox, payload)) {
-                std::lock_guard<std::mutex> lock(g_ws_mutex);
-                if (g_roblox_ws == roblox) {
+        if (robloxValid) {
+            std::lock_guard<std::mutex> lock(g_ws_mutex);
+            if (g_roblox_ws == roblox) {
+                if (!send_ws_text_frame(roblox, payload)) {
                     closesocket(g_roblox_ws);
                     g_roblox_ws = INVALID_SOCKET;
                 }
@@ -461,9 +181,9 @@ inline void handle_ws_client(SOCKET ClientSocket, const std::string& request_hea
             }
         }
         
-        CreateDirectoryW(L"workspace_sync", NULL);
+        CreateDirectoryW(WORKSPACE_SYNC_DIR, NULL);
         std::vector<FileInfo> files;
-        scan_directory_recursive(L"workspace_sync", L"", files);
+        scan_directory_recursive(WORKSPACE_SYNC_DIR, L"", files);
         
         bool has_changes = false;
         unsigned long long latest_time = client_time;
@@ -482,7 +202,7 @@ inline void handle_ws_client(SOCKET ClientSocket, const std::string& request_hea
             bool first_file = true;
             for (const auto& file : files) {
                 if (file.last_write_time > client_time) {
-                    std::wstring full_w = L"workspace_sync\\" + to_wstring(file.relative_path);
+                    std::wstring full_w = std::wstring(WORKSPACE_SYNC_DIR) + L"\\" + to_wstring(file.relative_path);
                     std::ifstream in(full_w.c_str(), std::ios::binary);
                     std::string src = "";
                     if (in.is_open()) {
@@ -646,440 +366,13 @@ void handle_client(SOCKET ClientSocket) {
         } else if (path == "/dashboard-ws" && method == "GET") {
             handle_dashboard_ws(ClientSocket, request_data);
             return;
-        } else if ((path == "/" || path == "/app") && method == "GET") {
-            send_response(ClientSocket, 200, "OK", helper_dashboard_html(), "text/html; charset=utf-8");
-        } else if (path == "/status" && method == "GET") {
-            send_response(ClientSocket, 200, "OK", "DEX++ C++ Helper Server Active");
-        } else if (path == "/worker-status" && method == "GET") {
-            send_response(ClientSocket, 200, "OK", worker_status(), "application/json");
-        } else if (path == "/toolchain-status" && method == "GET") {
-            send_response(ClientSocket, 200, "OK", toolchain_status(), "application/json");
-        } else if (path == "/open-toolchain-setup" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", open_toolchain_setup(), "application/json");
-        } else if (path == "/script-status" && method == "GET") {
-            send_response(ClientSocket, 200, "OK", script_status_response(), "application/json");
-        } else if (path == "/script" && method == "GET") {
-            std::ifstream script_file("DEX++_compiled.luau");
-            if (!script_file.is_open()) {
-                script_file.open("../DEX++_compiled.luau");
-            }
-            if (script_file.is_open()) {
-                std::stringstream buffer;
-                buffer << script_file.rdbuf();
-                script_file.close();
-                send_response(ClientSocket, 200, "OK", buffer.str());
-            } else {
-                send_response(ClientSocket, 404, "Not Found", "-- Error: DEX++_compiled.luau not found on server.");
-            }
-        } else if (path == "/log" && method == "POST") {
-            if (body.size() > MAX_LOG_BODY_SIZE) {
-                send_response(ClientSocket, 413, "Payload Too Large", "Log entry is too large.");
-                close_client(ClientSocket);
-                return;
-            }
-            std::lock_guard<std::mutex> lock(g_log_mutex);
-            rotate_log_if_needed("dex_server_logs.txt");
-            std::ofstream log_file("dex_server_logs.txt", std::ios::app);
-            if (log_file.is_open()) {
-                log_file << body << std::endl;
-                log_file.close();
-            }
-            send_response(ClientSocket, 200, "OK", "Logged");
-        } else if ((path == "/normalize-source" || path == "/deobfuscate") && method == "POST") {
-            send_response(ClientSocket, 200, "OK", normalize_source(body));
-        } else if (path == "/analyze-source" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", analyze_source(body), "application/json");
-        } else if (path == "/analyze-source-fast" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", analyze_source_fast(body), "application/json");
-        } else if (path == "/analyze-source-deep" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", analyze_source_deep(body), "application/json");
-        } else if (path == "/analyze-source-auto" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", analyze_source_auto(body), "application/json");
-        } else if (path == "/analyze-remotes" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", analyze_remote_logs(body), "application/json");
-        } else if (path == "/index-source" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", index_source_payload(body));
-        } else if (path == "/search-source" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", search_index(body));
-        } else if (path == "/index-entry" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", index_entry(body), "application/json");
-        } else if (path == "/index-status" && method == "GET") {
-            send_response(ClientSocket, 200, "OK", index_status());
-        } else if (path == "/tool-state" && method == "GET") {
-            send_response(ClientSocket, 200, "OK", get_tool_state_response(), "application/json");
-        } else if (path == "/tool-state" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", set_tool_state_response(body), "application/json");
-        } else if (path == "/index-save" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", save_index_response());
-        } else if (path == "/index-load" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", load_index_response());
-        } else if (path == "/index-clear" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_script_index_mutex);
-            g_script_index.clear();
-            bool saved = save_index_locked();
-            send_response(ClientSocket, 200, "OK", saved ? "{\"ok\":true,\"total\":0,\"persisted\":true}" : "{\"ok\":true,\"total\":0,\"persisted\":false}");
-        } else if (path == "/api/roblox/login" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::string res = get_roblox_profile_response(body);
-            if (res.find("\"ok\":true") != std::string::npos) {
-                g_roblox_cookie = body;
-                save_auth_credentials();
-            }
-            send_response(ClientSocket, 200, "OK", res, "application/json");
-        } else if (path == "/api/roblox/logout" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            g_roblox_cookie = "";
-            save_auth_credentials();
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-        } else if (path == "/api/roblox/profile" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            send_response(ClientSocket, 200, "OK", get_roblox_profile_response(g_roblox_cookie), "application/json");
-        } else if (path == "/api/github/login" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::string res = get_github_profile_response(body);
-            if (res.find("\"ok\":true") != std::string::npos) {
-                g_github_token = body;
-                g_github_oauth_token = "";
-                save_auth_credentials();
-            }
-            send_response(ClientSocket, 200, "OK", res, "application/json");
-        } else if (path == "/api/github/logout" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            g_github_token = "";
-            g_github_oauth_token = "";
-            save_auth_credentials();
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-        } else if (path == "/api/github/profile" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            if (!g_github_oauth_token.empty()) {
-                send_response(ClientSocket, 200, "OK", get_github_profile_response(g_github_oauth_token), "application/json");
-            } else {
-                send_response(ClientSocket, 200, "OK", get_github_profile_response(g_github_token), "application/json");
-            }
-        } else if (path == "/api/google/login" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::string res = verify_gemini_api_key(body);
-            if (res.find("\"ok\":true") != std::string::npos) {
-                g_google_api_key = body;
-                g_google_oauth_token = "";
-                save_auth_credentials();
-            }
-            send_response(ClientSocket, 200, "OK", res, "application/json");
-        } else if (path == "/api/google/logout" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            g_google_api_key = "";
-            g_google_oauth_token = "";
-            save_auth_credentials();
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-        } else if (path == "/api/google/profile" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            if (!g_google_oauth_token.empty()) {
-                send_response(ClientSocket, 200, "OK", get_google_profile_response(g_google_oauth_token), "application/json");
-            } else {
-                send_response(ClientSocket, 200, "OK", verify_gemini_api_key(g_google_api_key), "application/json");
-            }
-        } else if (path == "/api/openai/login" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::string res = get_openai_profile_response(body);
-            if (res.find("\"ok\":true") != std::string::npos) {
-                g_openai_api_key = body;
-                save_auth_credentials();
-            }
-            send_response(ClientSocket, 200, "OK", res, "application/json");
-        } else if (path == "/api/openai/logout" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            g_openai_api_key = "";
-            save_auth_credentials();
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-        } else if (path == "/api/openai/profile" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            send_response(ClientSocket, 200, "OK", get_openai_profile_response(g_openai_api_key), "application/json");
-        } else if (path == "/api/accounts" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            send_response(ClientSocket, 200, "OK", g_accounts_json, "application/json");
-            return;
-        } else if (path == "/api/detect-ides" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            bool mcp_active = (g_last_mcp_time > 0 && (GetTickCount64() - g_last_mcp_time) < 30000);
-            std::stringstream json;
-            json << "{\"ok\":true,\"ides\":" << detect_running_ides_json() << ",\"mcpActive\":" << (mcp_active ? "true" : "false") << "}";
-            send_response(ClientSocket, 200, "OK", json.str(), "application/json");
-            return;
-        } else if (path == "/api/mcp/start" && (method == "POST" || method == "GET")) {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::string res = start_mcp_bridger();
-            send_response(ClientSocket, 200, "OK", res, "application/json");
-            return;
-        } else if (path == "/api/accounts" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            g_accounts_json = body;
-            save_auth_credentials();
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-            return;
-        } else if (path == "/api/auth/active-token" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::string provider = extract_json_field(body, "provider");
-            std::string token = extract_json_field(body, "token");
-            std::string type = extract_json_field(body, "type");
-            
-            if (provider == "roblox") {
-                g_roblox_cookie = token;
-            } else if (provider == "github") {
-                if (type == "oauth") {
-                    g_github_oauth_token = token;
-                    g_github_token = "";
-                } else {
-                    g_github_token = token;
-                    g_github_oauth_token = "";
-                }
-            } else if (provider == "google") {
-                if (type == "oauth") {
-                    g_google_oauth_token = token;
-                    g_google_api_key = "";
-                } else {
-                    g_google_api_key = token;
-                    g_google_oauth_token = "";
-                }
-            } else if (provider == "openai") {
-                g_openai_api_key = token;
-            }
-            save_auth_credentials();
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-            return;
-        } else if (path == "/api/auth/oauth-config" && method == "POST") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            g_google_client_id = extract_json_field(body, "googleClientId");
-            g_google_client_secret = extract_json_field(body, "googleClientSecret");
-            g_github_client_id = extract_json_field(body, "githubClientId");
-            g_github_client_secret = extract_json_field(body, "githubClientSecret");
-            save_auth_credentials();
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-        } else if (path == "/api/auth/oauth-config" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::stringstream json;
-            json << "{\"googleClientId\":\"" << escape_json(g_google_client_id) << "\","
-                 << "\"googleClientSecret\":\"" << escape_json(g_google_client_secret) << "\","
-                 << "\"githubClientId\":\"" << escape_json(g_github_client_id) << "\","
-                 << "\"githubClientSecret\":\"" << escape_json(g_github_client_secret) << "\"}";
-            send_response(ClientSocket, 200, "OK", json.str(), "application/json");
-        } else if (path == "/api/auth/google/login" && method == "GET") {
-            if (g_google_client_id.empty()) {
-                send_response(ClientSocket, 400, "Bad Request", "{\"ok\":false,\"error\":\"Google OAuth is not configured in Developer settings.\"}");
-                return;
-            }
-            std::stringstream redirect;
-            redirect << "https://accounts.google.com/o/oauth2/v2/auth?"
-                     << "client_id=" << g_google_client_id
-                     << "&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fapi%2Fauth%2Fgoogle%2Fcallback"
-                     << "&response_type=code"
-                     << "&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgenerative-language%20email%20profile"
-                     << "&access_type=offline"
-                     << "&prompt=consent";
-            
-            std::stringstream response;
-            response << "HTTP/1.1 302 Found\r\n"
-                     << "Location: " << redirect.str() << "\r\n"
-                     << "Content-Length: 0\r\n\r\n";
-            send(ClientSocket, response.str().data(), static_cast<int>(response.str().size()), 0);
-            return;
-        } else if (path == "/api/auth/google/callback" && method == "GET") {
-            size_t code_pos = request_data.find("code=");
-            if (code_pos == std::string::npos) {
-                send_response(ClientSocket, 400, "Bad Request", "Authentication failed: no code returned.");
-                return;
-            }
-            size_t amp_pos = request_data.find("&", code_pos);
-            size_t space_pos = request_data.find(" ", code_pos);
-            size_t end_pos = (amp_pos != std::string::npos && amp_pos < space_pos) ? amp_pos : space_pos;
-            std::string auth_code = request_data.substr(code_pos + 5, end_pos - (code_pos + 5));
-            
-            std::string body = "code=" + auth_code +
-                               "&client_id=" + g_google_client_id +
-                               "&client_secret=" + g_google_client_secret +
-                               "&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fapi%2Fauth%2Fgoogle%2Fcallback" +
-                               "&grant_type=authorization_code";
-                               
-            std::string res = http_post_https("oauth2.googleapis.com", "/token", "Content-Type: application/x-www-form-urlencoded\r\n", body);
-            std::string access_token = extract_json_field(res, "access_token");
-            if (access_token.empty()) {
-                send_response(ClientSocket, 400, "Bad Request", "Exchange failed: " + res);
-                return;
-            }
-            
-            {
-                std::lock_guard<std::mutex> lock(g_auth_mutex);
-                g_google_oauth_token = access_token;
-                g_google_api_key = "";
-                save_auth_credentials();
-            }
-            
-            std::string success_html = "<html><head><title>Success</title><style>body{background:#0b0e14;color:#cbd5e1;font-family:sans-serif;text-align:center;padding:50px}h1{color:#52b69a}</style></head><body><h1>Login Successful!</h1><p>Google Account successfully connected to DEX++. You can close this tab now.</p><script>window.close()</script></body></html>";
-            send_response(ClientSocket, 200, "OK", success_html, "text/html");
-            return;
-        } else if (path == "/api/auth/github/login" && method == "GET") {
-            if (g_github_client_id.empty()) {
-                send_response(ClientSocket, 400, "Bad Request", "{\"ok\":false,\"error\":\"GitHub OAuth is not configured.\"}");
-                return;
-            }
-            std::stringstream redirect;
-            redirect << "https://github.com/login/oauth/authorize?"
-                     << "client_id=" << g_github_client_id
-                     << "&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fapi%2Fauth%2Fgithub%2Fcallback"
-                     << "&scope=repo";
-            
-            std::stringstream response;
-            response << "HTTP/1.1 302 Found\r\n"
-                     << "Location: " << redirect.str() << "\r\n"
-                     << "Content-Length: 0\r\n\r\n";
-            send(ClientSocket, response.str().data(), static_cast<int>(response.str().size()), 0);
-            return;
-        } else if (path == "/api/auth/github/callback" && method == "GET") {
-            size_t code_pos = request_data.find("code=");
-            if (code_pos == std::string::npos) {
-                send_response(ClientSocket, 400, "Bad Request", "Authentication failed: no code returned.");
-                return;
-            }
-            size_t amp_pos = request_data.find("&", code_pos);
-            size_t space_pos = request_data.find(" ", code_pos);
-            size_t end_pos = (amp_pos != std::string::npos && amp_pos < space_pos) ? amp_pos : space_pos;
-            std::string auth_code = request_data.substr(code_pos + 5, end_pos - (code_pos + 5));
-            
-            std::string body = "client_id=" + g_github_client_id +
-                               "&client_secret=" + g_github_client_secret +
-                               "&code=" + auth_code +
-                               "&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fapi%2Fauth%2Fgithub%2Fcallback";
-                               
-            std::string res = http_post_https("github.com", "/login/oauth/access_token", "Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n", body);
-            std::string access_token = extract_json_field(res, "access_token");
-            if (access_token.empty()) {
-                send_response(ClientSocket, 400, "Bad Request", "Exchange failed: " + res);
-                return;
-            }
-            
-            {
-                std::lock_guard<std::mutex> lock(g_auth_mutex);
-                g_github_oauth_token = access_token;
-                g_github_token = "";
-                save_auth_credentials();
-            }
-            
-            std::string success_html = "<html><head><title>Success</title><style>body{background:#0b0e14;color:#cbd5e1;font-family:sans-serif;text-align:center;padding:50px}h1{color:#52b69a}</style></head><body><h1>Login Successful!</h1><p>GitHub Account successfully connected to DEX++. You can close this tab now.</p><script>window.close()</script></body></html>";
-            send_response(ClientSocket, 200, "OK", success_html, "text/html");
-            return;
-        } else if (path == "/api/auth/tokens" && method == "GET") {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            std::stringstream json;
-            json << "{\"ok\":true,"
-                 << "\"googleToken\":\"" << escape_json(!g_google_oauth_token.empty() ? g_google_oauth_token : g_google_api_key) << "\","
-                 << "\"googleMethod\":\"" << (!g_google_oauth_token.empty() ? "oauth" : "apikey") << "\","
-                 << "\"githubToken\":\"" << escape_json(!g_github_oauth_token.empty() ? g_github_oauth_token : g_github_token) << "\","
-                 << "\"githubMethod\":\"" << (!g_github_oauth_token.empty() ? "oauth" : "apikey") << "\","
-                 << "\"openaiToken\":\"" << escape_json(g_openai_api_key) << "\","
-                 << "\"openaiMethod\":\"apikey\","
-                 << "\"robloxCookie\":\"" << escape_json(g_roblox_cookie) << "\"}";
-            send_response(ClientSocket, 200, "OK", json.str(), "application/json");
-            return;
-        } else if (path == "/stop-local-services" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true,\"stopping\":[\"DEX_Helper.exe\",\"Decompiler.exe\"]}", "application/json");
-            schedule_local_shutdown(false);
-        } else if (path == "/clean-local" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", "{\"ok\":true,\"cleaning\":[\"dex_helper_index.dat\",\"dex_server_logs.txt\"],\"stopping\":[\"DEX_Helper.exe\",\"Decompiler.exe\"]}", "application/json");
-            schedule_local_shutdown(true);
-        } else if (path == "/assign-role" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", assign_role(body));
-        } else if (path == "/decompile" && method == "POST") {
-            send_response(ClientSocket, 200, "OK", decompile_bytecode(body));
-        } else if (path == "/sync-to-disk" && method == "POST") {
-            auto parts = split_header_payload(body, 1);
-            if (parts.size() != 2 || parts[0].empty()) {
-                send_response(ClientSocket, 400, "Bad Request", "{\"ok\":false,\"error\":\"invalid payload\"}", "application/json");
-                close_client(ClientSocket);
-                return;
-            }
-            
-            std::string script_path = parts[0];
-            std::string source_code = parts[1];
-            
-            std::string local_rel = "workspace_sync\\";
-            for (char c : script_path) {
-                if (c == '.') {
-                    local_rel += '\\';
-                } else {
-                    local_rel += c;
-                }
-            }
-            local_rel += ".luau";
-            
-            std::wstring w_path = to_wstring(local_rel);
-            create_directories_for_file(w_path);
-            
-            std::ofstream out(w_path.c_str(), std::ios::binary | std::ios::trunc);
-            if (out.is_open()) {
-                out.write(source_code.data(), source_code.size());
-                out.close();
-                send_response(ClientSocket, 200, "OK", "{\"ok\":true}", "application/json");
-            } else {
-                send_response(ClientSocket, 500, "Internal Error", "{\"ok\":false,\"error\":\"could not open file for writing\"}", "application/json");
-            }
-        } else if (path == "/sync-poll" && method == "POST") {
-            unsigned long long client_time = 0;
-            try {
-                client_time = std::stoull(body);
-            } catch (...) {
-                client_time = 0;
-            }
-            
-            CreateDirectoryW(L"workspace_sync", NULL);
-            std::vector<FileInfo> files;
-            scan_directory_recursive(L"workspace_sync", L"", files);
-            
-            std::stringstream json;
-            json << "{\"ok\":true,\"files\":[";
-            bool first_file = true;
-            for (const auto& file : files) {
-                if (file.last_write_time > client_time) {
-                    std::wstring full_w = L"workspace_sync\\" + to_wstring(file.relative_path);
-                    std::ifstream in(full_w.c_str(), std::ios::binary);
-                    std::string src = "";
-                    if (in.is_open()) {
-                        std::stringstream buffer;
-                        buffer << in.rdbuf();
-                        src = buffer.str();
-                        in.close();
-                    }
-                    
-                    std::string script_path = "";
-                    std::string rel = file.relative_path;
-                    if (rel.size() > 5 && rel.substr(rel.size() - 5) == ".luau") {
-                        rel = rel.substr(0, rel.size() - 5);
-                    }
-                    for (char c : rel) {
-                        if (c == '\\') {
-                            script_path += '.';
-                        } else {
-                            script_path += c;
-                        }
-                    }
-                    
-                    if (!first_file) json << ",";
-                    first_file = false;
-                    
-                    json << "{\"path\":\"" << escape_json(script_path) << "\","
-                         << "\"source\":\"" << escape_json(src) << "\","
-                         << "\"timestamp\":" << file.last_write_time << "}";
-                }
-            }
-            
-            FILETIME current_ft;
-            GetSystemTimeAsFileTime(&current_ft);
-            ULARGE_INTEGER current_ui;
-            current_ui.LowPart = current_ft.dwLowDateTime;
-            current_ui.HighPart = current_ft.dwHighDateTime;
-            
-            json << "],\"timestamp\":" << current_ui.QuadPart << "}";
-            send_response(ClientSocket, 200, "OK", json.str(), "application/json");
         } else {
-            send_response(ClientSocket, 404, "Not Found", "404 Route Not Found");
+            RouteDispatchResult route_result = dispatch_http_routes(ClientSocket, method, path, body, request_data);
+            if (route_result == RouteDispatchResult::NotFound) {
+                send_response(ClientSocket, 404, "Not Found", "404 Route Not Found");
+            } else if (route_result == RouteDispatchResult::CloseConnection) {
+                return;
+            }
         }
     }
 

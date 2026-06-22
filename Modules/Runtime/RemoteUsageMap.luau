@@ -5,7 +5,7 @@
 ]]
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, RemoteUsageMap, Notebook -- Major Apps
+local Explorer, Properties, Notepad, RemoteUsageMap -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 local function initDeps(data)
 	Main = data.Main
@@ -25,8 +25,7 @@ local function initAfterMain()
 	Properties = Apps.Properties
 	Notepad = Apps.Notepad
 	RemoteUsageMap = Apps.RemoteUsageMap
-	Notebook = Apps.Notebook
-end
+	end
 local function main()
 	local RemoteUsageMap = {}
 	local window, statusLabel, listFrame
@@ -52,12 +51,7 @@ local function main()
 		return typeof(obj) == "Instance" and remoteClasses[obj.ClassName] == true
 	end
 	local function getPath(obj)
-        if Main and Main.SafeGetInstancePath then return Main.SafeGetInstancePath(obj) end
-		local success, path = pcall(function()
-			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(obj) end
-			return obj:GetFullName()
-		end)
-		return success and tostring(path) or tostring(obj)
+		return Lib.getSafePath(obj)
 	end
 	local function clearRows()
 		if not listFrame then return end

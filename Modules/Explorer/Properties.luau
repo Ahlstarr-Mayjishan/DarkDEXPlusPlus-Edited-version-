@@ -6,7 +6,7 @@
 
 -- Common Locals
 local Main,Lib,Apps,Settings -- Main Containers
-local Explorer, Properties, Notepad, Notebook -- Major Apps
+local Explorer, Properties, Notepad -- Major Apps
 local API,RMD,env,service,plr,create,createSimple -- Main Locals
 
 local function initDeps(data)
@@ -28,8 +28,7 @@ local function initAfterMain()
 	Explorer = Apps.Explorer
 	Properties = Apps.Properties
 	Notepad = Apps.Notepad
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local Properties = {}
@@ -1862,7 +1861,7 @@ local function main()
 		Properties.FullNameFrameAttach = Lib.AttachTo(fullNameFrame)
 	end
 
-	Properties.Init = function() -- TODO: MAKE BETTER
+	Properties.CreateToolbar = function()
 		local guiItems = create({
 			{1,"Folder",{Name="Items",}},
 			{2,"Frame",{BackgroundColor3=Color3.new(0.20392157137394,0.20392157137394,0.20392157137394),BorderSizePixel=0,Name="ToolBar",Parent={1},Size=UDim2.new(1,0,0,22),}},
@@ -1876,30 +1875,10 @@ local function main()
 			{10,"Frame",{BackgroundColor3=Color3.new(0.15686275064945,0.15686275064945,0.15686275064945),BorderSizePixel=0,Name="ScrollCorner",Parent={1},Position=UDim2.new(1,-16,1,-16),Size=UDim2.new(0,16,0,16),Visible=false,}},
 			{11,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ClipsDescendants=true,Name="List",Parent={1},Position=UDim2.new(0,0,0,23),Size=UDim2.new(1,0,1,-23),}},
 		})
+		return guiItems
+	end
 
-		-- Vars
-		categoryOrder =  API.CategoryOrder
-		for category,_ in next,categoryOrder do
-			if not Properties.CollapsedCategories[category] then
-				expanded["CAT_"..category] = true
-			end
-		end
-		expanded["Sound.SoundId"] = true
-
-		-- Init window
-		window = Lib.Window.new()
-		Properties.Window = window
-		window:SetTitle("Properties")
-
-		toolBar = guiItems.ToolBar
-		propsFrame = guiItems.List
-
-		Properties.GuiElems.ToolBar = toolBar
-		Properties.GuiElems.PropsFrame = propsFrame
-
-		Properties.InitEntryStuff()
-
-		-- Window events
+	Properties.SetupWindowEvents = function()
 		window.GuiElems.Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
 			if Properties.Window:IsContentVisible() then
 				Properties.UpdateView()
@@ -1916,9 +1895,10 @@ local function main()
 			Properties.Update()
 			Properties.Refresh()
 		end)
+	end
 
-		-- Init scrollbars
-		scrollV = Lib.ScrollBar.new()		
+	Properties.SetupScrollbars = function()
+		scrollV = Lib.ScrollBar.new()
 		scrollV.WheelIncrement = 3
 		scrollV.Gui.Position = UDim2.new(1,-16,0,23)
 		scrollV:SetScrollFrame(propsFrame)
@@ -1934,8 +1914,9 @@ local function main()
 		scrollH.Scrolled:Connect(function()
 			requestRefresh()
 		end)
+	end
 
-		-- Setup Gui
+	Properties.SetupGuiLayout = function()
 		window.GuiElems.Line.Position = UDim2.new(0,0,0,22)
 		toolBar.Parent = window.GuiElems.Content
 		propsFrame.Parent = window.GuiElems.Content
@@ -1944,6 +1925,36 @@ local function main()
 		scrollH.Gui.Parent = window.GuiElems.Content
 		Properties.InitInputBox()
 		Properties.InitSearch()
+	end
+
+	Properties.Init = function()
+		-- Initialize category expansion state
+		categoryOrder = API.CategoryOrder
+		for category,_ in next,categoryOrder do
+			if not Properties.CollapsedCategories[category] then
+				expanded["CAT_"..category] = true
+			end
+		end
+		expanded["Sound.SoundId"] = true
+
+		-- Create GUI elements
+		local guiItems = Properties.CreateToolbar()
+
+		-- Initialize window
+		window = Lib.Window.new()
+		Properties.Window = window
+		window:SetTitle("Properties")
+
+		toolBar = guiItems.ToolBar
+		propsFrame = guiItems.List
+
+		Properties.GuiElems.ToolBar = toolBar
+		Properties.GuiElems.PropsFrame = propsFrame
+
+		Properties.InitEntryStuff()
+		Properties.SetupWindowEvents()
+		Properties.SetupScrollbars()
+		Properties.SetupGuiLayout()
 	end
 
 	return Properties

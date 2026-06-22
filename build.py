@@ -1,4 +1,21 @@
 import os
+import subprocess
+import sys
+
+LIB_PARTS_MARKER = "\t-- Signal + Set live in Modules/Core/Lib/SignalSet.luau (merged at build time)\n"
+
+def read_module_source(name, filepath):
+    with open(filepath, "r", encoding="utf-8") as mf:
+        m_code = mf.read().strip()
+
+    if name == "Lib":
+        part_path = os.path.join("Modules", "Core", "Lib", "SignalSet.luau")
+        if os.path.exists(part_path):
+            with open(part_path, "r", encoding="utf-8") as pf:
+                part_code = pf.read().strip()
+            m_code = m_code.replace(LIB_PARTS_MARKER, part_code + "\n\n")
+
+    return m_code
 
 def lua_long_string(value):
     level = 0
@@ -24,7 +41,7 @@ def build():
     # grouped by ownership so the repo is easier to navigate.
     module_groups = {
         "Core": [
-            "Theme", "Lib", "Console", "SettingsWindow", "ControlCenter",
+            "Theme", "State", "IconData", "Lib", "Console", "SettingsWindow", "ControlCenter",
             "TaskRouter", "ThreadManager",
         ],
         "Explorer": [
@@ -66,7 +83,7 @@ def build():
             filepath = filepath[:-5] + ".lua" if filepath.endswith(".luau") else os.path.join("Modules", f"{name}.lua")
             
         with open(filepath, "r", encoding="utf-8") as mf:
-            m_code = mf.read().strip()
+            m_code = read_module_source(name, filepath)
         
         # Indent the module code for clean formatting inside EmbeddedModules
         indented_code = "\n".join("    " + line for line in m_code.splitlines())
@@ -91,6 +108,13 @@ def build():
     with open("DEX++_compiled.luau", "w", encoding="utf-8") as out:
         out.write(compiled)
     print("Built DEX++_compiled.luau successfully!")
+
+    verify_script = os.path.join("scripts", "verify_build.py")
+    if os.path.exists(verify_script):
+        print("Running build verification...")
+        result = subprocess.run([sys.executable, verify_script], check=False)
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
 
 if __name__ == "__main__":
     build()

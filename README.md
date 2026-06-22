@@ -297,10 +297,14 @@ Current bundled plugins:
 
 - `HttpSpy.lua`
 - `LoadedModuleSpy.lua`
+- `MemoryForensics.lua`
 - `MetatableHookManager.lua`
 - `RemoteSpy.lua`
+- `RuntimeDebugger.lua`
 - `TableEditor.lua`
+- `TargetedPropertyProbe.lua`
 - `TaskRouterLab.lua`
+- `TrackAnimationID.lua`
 
 ## Copy to AI + helper analysis
 

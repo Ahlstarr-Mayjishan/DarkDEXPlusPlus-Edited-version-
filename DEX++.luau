@@ -53,7 +53,7 @@ local EmbeddedModules = {
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename, History--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename, History, DefaultSettings, Lib, State local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -518,9 +518,11 @@ Main = (function()
 		end
 	end
 
-	Main.ModuleList = {"Theme","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
+	Main.ModuleList = {"Theme","State","IconData","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
 	Main.ModulePathMap = {
 		Theme = "Core/Theme",
+		State = "Core/State",
+		IconData = "Core/IconData",
 		Lib = "Core/Lib",
 		Console = "Core/Console",
 		SettingsWindow = "Core/SettingsWindow",
@@ -957,7 +959,7 @@ Main = (function()
 	end
 
 	Main.LoadModules = function()
-		for i,v in pairs(Main.ModuleList) do
+		for i,v in ipairs(Main.ModuleList) do
 			local s,e = pcall(Main.LoadModule,v)
 			if not s then
 				Main.Error("FAILED LOADING " .. v .. " CAUSE " .. e)
@@ -971,7 +973,7 @@ Main = (function()
 		Console = Apps.Console
 		SaveInstance = Apps.SaveInstance
 		ModelViewer = Apps.ModelViewer
-		Notebook = Apps.Notebook
+
 		SettingsWindow = Apps.SettingsWindow
 		CodeSearch = Apps.CodeSearch
 		ScriptRelations = Apps.ScriptRelations
@@ -1004,11 +1006,13 @@ Main = (function()
 		PropertyRestorer = Apps.PropertyRestorer
 		Rename = Apps.Rename
 		History = Apps.History
+		State = Apps.State
 
 
-		--SecretServicePanel = Apps.SecretServicePanel
+
 		local appTable = {
 			Theme = Theme,
+			State = State,
 			SmartDecompiler = SmartDecompiler,
 			Explorer = Explorer,
 			Properties = Properties,
@@ -1016,7 +1020,7 @@ Main = (function()
 			Console = Console,
 			SaveInstance = SaveInstance,
 			ModelViewer = ModelViewer,
-			Notebook = Notebook,
+
 			SettingsWindow = SettingsWindow,
 			CodeSearch = CodeSearch,
 			ScriptRelations = ScriptRelations,
@@ -1050,7 +1054,7 @@ Main = (function()
 		}
 
 		Main.AppControls.Lib.InitAfterMain(appTable)
-		for i,v in pairs(Main.ModuleList) do
+		for i,v in ipairs(Main.ModuleList) do
 			local control = Main.AppControls[v]
 			if control then
 				control.InitAfterMain(appTable)
@@ -1705,7 +1709,9 @@ Main = (function()
 			local cache = {}
 			local HttpService = service.HttpService
 			local rootDir = "dex/DecompileCache"
-			local placeDir = rootDir .. "/" .. tostring(game.PlaceId)
+			local gameIdStr = (game.GameId and game.GameId ~= 0) and tostring(game.GameId) or "UnknownGame"
+			local sharedSourcesDir = rootDir .. "/" .. gameIdStr .. "/shared_sources"
+			local placeDir = rootDir .. "/" .. gameIdStr .. "/" .. tostring(game.PlaceId)
 			local metadataPath = placeDir .. "/metadata.json"
 			local metadataLoaded = false
 			local metadata = {PlaceId = tostring(game.PlaceId), Scripts = {}}
@@ -1724,6 +1730,8 @@ Main = (function()
 				if not isReady() then return false end
 				ensureFolder("dex")
 				ensureFolder(rootDir)
+				ensureFolder(rootDir .. "/" .. gameIdStr)
+				ensureFolder(sharedSourcesDir)
 				ensureFolder(placeDir)
 				return true
 			end
@@ -1822,8 +1830,17 @@ Main = (function()
 				if not info then return false end
 
 				local entry = metadata.Scripts[info.Key]
-				if not entry then return false end
-				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then return false end
+				if not entry then
+					if info.Hash then
+						local sharedPath = sharedSourcesDir .. "/" .. info.Hash .. ".lua"
+						return env.isfile(sharedPath)
+					end
+					return false
+				end
+				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then
+					local sharedPath = sharedSourcesDir .. "/" .. info.Hash .. ".lua"
+					return env.isfile(sharedPath)
+				end
 
 				local path = placeDir .. "/" .. tostring(entry.File or info.File)
 				return env.isfile(path)
@@ -1849,16 +1866,52 @@ Main = (function()
 				if not info then return nil, "Script cache info is unavailable." end
 
 				local entry = metadata.Scripts[info.Key]
-				if not entry then return nil, "No cached source." end
-				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then return nil, "Cached source is stale." end
+				local sharedPath = info.Hash and (sharedSourcesDir .. "/" .. info.Hash .. ".lua") or nil
 
-				local path = placeDir .. "/" .. tostring(entry.File or info.File)
-				if not env.isfile(path) then return nil, "Cached source file is missing." end
-
-				local success, source = pcall(env.readfile, path)
-				if success and isCacheableSource(source) then
-					return source, entry
+				if entry then
+					if info.Hash and entry.Hash and entry.Hash ~= info.Hash then
+						if sharedPath and env.isfile(sharedPath) then
+							local success, source = pcall(env.readfile, sharedPath)
+							if success and isCacheableSource(source) then
+								metadata.Scripts[info.Key] = {
+									Hash = info.Hash,
+									File = "../shared_sources/" .. info.Hash .. ".lua",
+									Path = info.Path,
+									Name = info.Name,
+									ClassName = info.ClassName,
+									UpdatedAt = os.time()
+								}
+								saveMetadata()
+								return source, metadata.Scripts[info.Key]
+							end
+						end
+					else
+						local path = placeDir .. "/" .. tostring(entry.File or info.File)
+						if env.isfile(path) then
+							local success, source = pcall(env.readfile, path)
+							if success and isCacheableSource(source) then
+								return source, entry
+							end
+						end
+					end
 				end
+
+				if sharedPath and env.isfile(sharedPath) then
+					local success, source = pcall(env.readfile, sharedPath)
+					if success and isCacheableSource(source) then
+						metadata.Scripts[info.Key] = {
+							Hash = info.Hash,
+							File = "../shared_sources/" .. info.Hash .. ".lua",
+							Path = info.Path,
+							Name = info.Name,
+							ClassName = info.ClassName,
+							UpdatedAt = os.time()
+						}
+						saveMetadata()
+						return source, metadata.Scripts[info.Key]
+					end
+				end
+
 				return nil, "Cached source is empty or contains a decompiler failure."
 			end
 			cache.Write = function(script_instance, source)
@@ -1868,14 +1921,23 @@ Main = (function()
 				local info = getInfo(script_instance)
 				if not info then return false end
 
-				local path = placeDir .. "/" .. info.File
-				local writeSuccess = pcall(env.writefile, path, source)
-				if not writeSuccess then return false end
+				local fileRef
+				if info.Hash then
+					local path = sharedSourcesDir .. "/" .. info.Hash .. ".lua"
+					local writeSuccess = pcall(env.writefile, path, source)
+					if not writeSuccess then return false end
+					fileRef = "../shared_sources/" .. info.Hash .. ".lua"
+				else
+					local path = placeDir .. "/" .. info.File
+					local writeSuccess = pcall(env.writefile, path, source)
+					if not writeSuccess then return false end
+					fileRef = info.File
+				end
 
 				loadMetadata()
 				metadata.Scripts[info.Key] = {
 					Hash = info.Hash,
-					File = info.File,
+					File = fileRef,
 					Path = info.Path,
 					Name = info.Name,
 					ClassName = info.ClassName,
@@ -3536,7 +3598,10 @@ Main = (function()
 		safeMakeFolder("dex/plugins")
 		safeMakeFolder("dex/ModuleCache")
 		safeMakeFolder("dex/DecompileCache")
-		safeMakeFolder("dex/DecompileCache/" .. tostring(game.PlaceId))
+		local gameIdStr = (game.GameId and game.GameId ~= 0) and tostring(game.GameId) or "UnknownGame"
+		safeMakeFolder("dex/DecompileCache/" .. gameIdStr)
+		safeMakeFolder("dex/DecompileCache/" .. gameIdStr .. "/shared_sources")
+		safeMakeFolder("dex/DecompileCache/" .. gameIdStr .. "/" .. tostring(game.PlaceId))
 	end
 
 	Main.SaveCurrentSettings = function()
@@ -3564,6 +3629,7 @@ Main = (function()
 
 		-- Load Lib
 		local intro = Main.CreateIntro("Initializing Library")
+		Main.LoadModule("IconData")
 		Lib = Main.LoadModule("Lib")
 		Lib.FastWait()
 

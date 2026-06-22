@@ -4,7 +4,7 @@
 	Previews image-like asset properties from selected instances.
 ]]
 local Main,Lib,Apps,Settings
-local Explorer, ImageViewer, Notebook
+local Explorer, ImageViewer
 local API,RMD,env,service,plr,create,createSimple
 
 local function initDeps(data)
@@ -16,8 +16,7 @@ end
 local function initAfterMain()
 	Explorer = Apps.Explorer
 	ImageViewer = Apps.ImageViewer
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local ImageViewer = {}

@@ -56,7 +56,7 @@ local EmbeddedModules = {
     
     -- Common Locals
     local Main, Lib, Apps, Settings -- Main Containers
-    local Explorer, Properties, Notepad, Notebook -- Major Apps
+    local Explorer, Properties, Notepad -- Major Apps
     local API, RMD, env, service, plr, create, createSimple -- Main Locals
     
     local function initDeps(data)
@@ -78,7 +78,6 @@ local EmbeddedModules = {
     	Explorer = t.Explorer
     	Properties = t.Properties
     	Notepad = t.Notepad
-    	Notebook = t.Notebook
     end
     
     local function main()
@@ -210,17 +209,14 @@ local EmbeddedModules = {
     
     return {InitDeps = initDeps, InitAfterMain = initAfterMain, Main = main}
 end,
-["Lib"] = function()
+["State"] = function()
     --[[
-    	Lib Module
-    	
-    	Container for functions and classes
+    	Declarative UI State & Reactivity Module
     ]]
     
     -- Common Locals
-    local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, Notebook -- Major Apps
-    local API,RMD,env,service,plr,create,createSimple -- Main Locals
+    local Main, Lib, Apps, Settings -- Main Containers
+    local API, RMD, env, service, plr, create, createSimple -- Main Locals
     
     local function initDeps(data)
     	Main = data.Main
@@ -238,706 +234,202 @@ end,
     end
     
     local function initAfterMain()
-    	Explorer = Apps.Explorer
-    	Properties = Apps.Properties
-    	Notepad = Apps.Notepad
-    	Notebook = Apps.Notebook
     end
     
     local function main()
-    	local Lib = {}
-    	Lib.create = create
-    	Lib.createSimple = createSimple
+    	local State = {}
     
-    	local renderStepped = service.RunService.RenderStepped
-    	local signalWait = renderStepped.wait
-    	local PH = newproxy() -- Placeholder, must be replaced in constructor
-    	local SIGNAL = newproxy()
+    	local StateCell = {}
+    	StateCell.__index = StateCell
     
-    	-- Usually for classes that work with a Roblox Object
-    	local function initObj(props,mt)
-    		local type = type
-    		local function copy(t)
-    			local res = {}
-    			for i,v in pairs(t) do
-    				if v == SIGNAL then
-    					res[i] = Lib.Signal.new()
-    				elseif type(v) == "table" then
-    					res[i] = copy(v)
-    				else
-    					res[i] = v
-    				end
-    			end		
-    			return res
-    		end
-    
-    		local newObj = copy(props)
-    		return setmetatable(newObj,mt)
+    	function StateCell.new(initialValue)
+    		local self = setmetatable({
+    			_value = initialValue,
+    			_listeners = {}
+    		}, StateCell)
+    		return self
     	end
     
-    	local function getGuiMT(props,funcs)
-    		return {__index = function(self,ind) if not props[ind] then return funcs[ind] or self.Gui[ind] end end,
-    		__newindex = function(self,ind,val) if not props[ind] then self.Gui[ind] = val else rawset(self,ind,val) end end}
+    	function StateCell:get()
+    		return self._value
     	end
     
-    	-- Functions
-    
-    	Lib.FormatLuaString = (function()
-    		local string = string
-    		local gsub = string.gsub
-    		local format = string.format
-    		local char = string.char
-    		local cleanTable = {['"'] = '\\"', ['\\'] = '\\\\'}
-    		for i = 0,31 do
-    			cleanTable[char(i)] = "\\"..format("%03d",i)
+    	function StateCell:set(newValue)
+    		if self._value == newValue then return end
+    		self._value = newValue
+    		for _, listener in ipairs(self._listeners) do
+    			task.spawn(listener, newValue)
     		end
-    		for i = 127,255 do
-    			cleanTable[char(i)] = "\\"..format("%03d",i)
-    		end
-    
-    		return function(str)
-    			return gsub(str,"[\"\\\0-\31\127-\255]",cleanTable)
-    		end
-    	end)()
-    
-    	Lib.CheckMouseInGui = function(gui)
-    		if gui == nil then return false end
-    		
-    		-- Support SurfaceGui coordinates by raycasting to the Adornee part
-    		local surfaceGui = gui:FindFirstAncestorOfClass("SurfaceGui")
-    		if surfaceGui then
-    			local part = surfaceGui.Adornee or surfaceGui.Parent
-    			if part and part:IsA("BasePart") then
-    				local camera = workspace.CurrentCamera
-    				local pos = service.UserInputService:GetMouseLocation()
-    				local mouseRay = camera:ViewportPointToRay(pos.X, pos.Y)
-    				local params = RaycastParams.new()
-    				params.FilterType = Enum.RaycastFilterType.Include
-    				params.FilterDescendantsInstances = {part}
-    				params.IgnoreWater = true
-    				local result = workspace:Raycast(mouseRay.Origin, mouseRay.Direction * 1000, params)
-    				if result then
-    					return true
-    				end
-    			end
-    			return false
-    		end
-    
-    		local mouse = Main.Mouse
-    		local guiPosition = gui.AbsolutePosition
-    		local guiSize = gui.AbsoluteSize	
-    
-    		return mouse.X >= guiPosition.X and mouse.X < guiPosition.X + guiSize.X and mouse.Y >= guiPosition.Y and mouse.Y < guiPosition.Y + guiSize.Y
     	end
     
-    	Lib.IsShiftDown = function()
-    		return service.UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+    	function StateCell:onChange(callback)
+    		table.insert(self._listeners, callback)
+    		return {
+    			Disconnect = function()
+    				local pos = table.find(self._listeners, callback)
+    				if pos then
+    					table.remove(self._listeners, pos)
+    				end
+    			end
+    		}
     	end
     
-    	Lib.IsCtrlDown = function()
-    		return service.UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    	function StateCell:__call()
+    		return self:get()
     	end
     
-    	Lib.CreateArrow = function(size,num,dir)
-    		local max = num
-    		local arrowFrame = createSimple("Frame",{
-    			BackgroundTransparency = 1,
-    			Name = "Arrow",
-    			Size = UDim2.new(0,size,0,size)
-    		})
-    		if dir == "up" then
-    			for i = 1,num do
-    				local newLine = createSimple("Frame",{
-    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
-    					BorderSizePixel = 0,
-    					Position = UDim2.new(0,math.floor(size/2)-(i-1),0,math.floor(size/2)+i-math.floor(max/2)-1),
-    					Size = UDim2.new(0,i+(i-1),0,1),
-    					Parent = arrowFrame
-    				})
-    			end
-    			return arrowFrame
-    		elseif dir == "down" then
-    			for i = 1,num do
-    				local newLine = createSimple("Frame",{
-    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
-    					BorderSizePixel = 0,
-    					Position = UDim2.new(0,math.floor(size/2)-(i-1),0,math.floor(size/2)-i+math.floor(max/2)+1),
-    					Size = UDim2.new(0,i+(i-1),0,1),
-    					Parent = arrowFrame
-    				})
-    			end
-    			return arrowFrame
-    		elseif dir == "left" then
-    			for i = 1,num do
-    				local newLine = createSimple("Frame",{
-    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
-    					BorderSizePixel = 0,
-    					Position = UDim2.new(0,math.floor(size/2)+i-math.floor(max/2)-1,0,math.floor(size/2)-(i-1)),
-    					Size = UDim2.new(0,1,0,i+(i-1)),
-    					Parent = arrowFrame
-    				})
-    			end
-    			return arrowFrame
-    		elseif dir == "right" then
-    			for i = 1,num do
-    				local newLine = createSimple("Frame",{
-    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
-    					BorderSizePixel = 0,
-    					Position = UDim2.new(0,math.floor(size/2)-i+math.floor(max/2)+1,0,math.floor(size/2)-(i-1)),
-    					Size = UDim2.new(0,1,0,i+(i-1)),
-    					Parent = arrowFrame
-    				})
-    			end
-    			return arrowFrame
-    		end
-    		error("r u ok")
-    	end
+    	local ComputedCell = {}
+    	ComputedCell.__index = ComputedCell
     
-    	Lib.ParseXML = (function()
-    		local func = function()
-    			-- Only exists to parse RMD
-    			-- from https://github.com/jonathanpoelen/xmlparser
-    
-    			local string, print, pairs = string, print, pairs
-    
-    			-- http://lua-users.org/wiki/StringTrim
-    			local trim = function(s)
-    				local from = s:match"^%s*()"
-    				return from > #s and "" or s:match(".*%S", from)
-    			end
-    
-    			local gtchar = string.byte('>', 1)
-    			local slashchar = string.byte('/', 1)
-    			local D = string.byte('D', 1)
-    			local E = string.byte('E', 1)
-    
-    			function parse(s, evalEntities)
-    				-- remove comments
-    				s = s:gsub('<!%-%-(.-)%-%->', '')
-    
-    				local entities, tentities = {}
-    
-    				if evalEntities then
-    					local pos = s:find('<[_%w]')
-    					if pos then
-    						s:sub(1, pos):gsub('<!ENTITY%s+([_%w]+)%s+(.)(.-)%2', function(name, q, entity)
-    							entities[#entities+1] = {name=name, value=entity}
-    						end)
-    						tentities = createEntityTable(entities)
-    						s = replaceEntities(s:sub(pos), tentities)
-    					end
-    				end
-    
-    				local t, l = {}, {}
-    
-    				local addtext = function(txt)
-    					txt = txt:match'^%s*(.*%S)' or ''
-    					if #txt ~= 0 then
-    						t[#t+1] = {text=txt}
-    					end		
-    				end
-    
-    				s:gsub('<([?!/]?)([-:_%w]+)%s*(/?>?)([^<]*)', function(type, name, closed, txt)
-    					-- open
-    					if #type == 0 then
-    						local a = {}
-    						if #closed == 0 then
-    							local len = 0
-    							for all,aname,_,value,starttxt in string.gmatch(txt, "(.-([-_%w]+)%s*=%s*(.)(.-)%3%s*(/?>?))") do
-    								len = len + #all
-    								a[aname] = value
-    								if #starttxt ~= 0 then
-    									txt = txt:sub(len+1)
-    									closed = starttxt
-    									break
-    								end
-    							end
-    						end
-    						t[#t+1] = {tag=name, attrs=a, children={}}
-    
-    						if closed:byte(1) ~= slashchar then
-    							l[#l+1] = t
-    							t = t[#t].children
-    						end
-    
-    						addtext(txt)
-    						-- close
-    					elseif '/' == type then
-    						t = l[#l]
-    						l[#l] = nil
-    
-    						addtext(txt)
-    						-- ENTITY
-    					elseif '!' == type then
-    						if E == name:byte(1) then
-    							txt:gsub('([_%w]+)%s+(.)(.-)%2', function(name, q, entity)
-    								entities[#entities+1] = {name=name, value=entity}
-    							end, 1)
-    						end
-    						-- elseif '?' == type then
-    						--	 print('?	' .. name .. ' // ' .. attrs .. '$$')
-    						-- elseif '-' == type then
-    						--	 print('comment	' .. name .. ' // ' .. attrs .. '$$')
-    						-- else
-    						--	 print('o	' .. #p .. ' // ' .. name .. ' // ' .. attrs .. '$$')
-    					end
-    				end)
-    
-    				return {children=t, entities=entities, tentities=tentities}
-    			end
-    
-    			function parseText(txt)
-    				return parse(txt)
-    			end
-    
-    			function defaultEntityTable()
-    				return { quot='"', apos='\'', lt='<', gt='>', amp='&', tab='\t', nbsp=' ', }
-    			end
-    
-    			function replaceEntities(s, entities)
-    				return s:gsub('&([^;]+);', entities)
-    			end
-    
-    			function createEntityTable(docEntities, resultEntities)
-    				entities = resultEntities or defaultEntityTable()
-    				for _,e in pairs(docEntities) do
-    					e.value = replaceEntities(e.value, entities)
-    					entities[e.name] = e.value
-    				end
-    				return entities
-    			end
-    
-    			return parseText
-    		end
-    		local newEnv = setmetatable({},{__index = getfenv()})
-    		setfenv(func,newEnv)
-    		return func()
-    	end)()
-    
-    	Lib.FastWait = function(s)
-    		if not s then return signalWait(renderStepped) end
-    		local start = tick()
-    		while tick() - start < s do signalWait(renderStepped) end
-    	end
-    
-    	Lib.ButtonAnim = function(button,data)
-    		local holding = false
-    		local disabled = false
-    		local mode = data and data.Mode or 1
-    		local control = {}
-    
-    		if mode == 2 then
-    			local lerpTo = data.LerpTo or Color3.new(0,0,0)
-    			local delta = data.LerpDelta or 0.2
-    			control.StartColor = data.StartColor or button.BackgroundColor3
-    			control.PressColor = data.PressColor or control.StartColor:lerp(lerpTo,delta)
-    			control.HoverColor = data.HoverColor or control.StartColor:lerp(control.PressColor,0.6)
-    			control.OutlineColor = data.OutlineColor
-    		end
-    
-    		button.InputBegan:Connect(function(input)
-    			if disabled then return end
-    
-    			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-    				if not holding then
-    					if mode == 1 then
-    						button.BackgroundTransparency = 0.4
-    					elseif mode == 2 then
-    						button.BackgroundColor3 = control.HoverColor
-    					end
-    				end
-    			elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-    				holding = true
-    				if mode == 1 then
-    					button.BackgroundTransparency = 0
-    				elseif mode == 2 then
-    					button.BackgroundColor3 = control.PressColor
-    					if control.OutlineColor then button.BorderColor3 = control.PressColor end
-    				end
-    			end
-    		end)
-    
-    		button.InputEnded:Connect(function(input)
-    			if disabled then return end
-    
-    			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-    				if not holding then
-    					if mode == 1 then
-    						button.BackgroundTransparency = 1
-    					elseif mode == 2 then
-    						button.BackgroundColor3 = control.StartColor
-    					end
-    				end
-    			elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-    				holding = false
-    				if mode == 1 then
-    					button.BackgroundTransparency = Lib.CheckMouseInGui(button) and 0.4 or 1
-    				elseif mode == 2 then
-    					button.BackgroundColor3 = Lib.CheckMouseInGui(button) and control.HoverColor or control.StartColor
-    					if control.OutlineColor then button.BorderColor3 = control.OutlineColor end
-    				end
-    			end
-    		end)
-    
-    		control.Disable = function()
-    			disabled = true
-    			holding = false
-    
-    			if mode == 1 then
-    				button.BackgroundTransparency = 1
-    			elseif mode == 2 then
-    				button.BackgroundColor3 = control.StartColor
-    			end
-    		end
-    
-    		control.Enable = function()
-    			disabled = false
-    		end
-    
-    		return control
-    	end
-    
-    	Lib.FindAndRemove = function(t,item)
-    		local pos = table.find(t,item)
-    		if pos then table.remove(t,pos) end
-    	end
-    
-    	Lib.AttachTo = function(obj,data)
-    		local target,posOffX,posOffY,sizeOffX,sizeOffY,resize,con
-    		local disabled = false
+    	function ComputedCell.new(dependencies, callback)
+    		local self = setmetatable({
+    			_callback = callback,
+    			_dependencies = dependencies,
+    			_listeners = {},
+    			_value = nil,
+    			_connections = {}
+    		}, ComputedCell)
     
     		local function update()
-    			if not obj or not target then return end
-    
-    			local targetPos = target.AbsolutePosition
-    			local targetSize = target.AbsoluteSize
-    			obj.Position = UDim2.new(0,targetPos.X + posOffX,0,targetPos.Y + posOffY)
-    			if resize then obj.Size = UDim2.new(0,targetSize.X + sizeOffX,0,targetSize.Y + sizeOffY) end
-    		end
-    
-    		local function setup(o,data)
-    			obj = o
-    			data = data or {}
-    			target = data.Target
-    			posOffX = data.PosOffX or 0
-    			posOffY = data.PosOffY or 0
-    			sizeOffX = data.SizeOffX or 0
-    			sizeOffY = data.SizeOffY or 0
-    			resize = data.Resize or false
-    
-    			if con then con:Disconnect() con = nil end
-    			if target then
-    				con = target.Changed:Connect(function(prop)
-    					if not disabled and prop == "AbsolutePosition" or prop == "AbsoluteSize" then
-    						update()
+    			local ok, newVal = pcall(self._callback)
+    			if ok then
+    				if self._value ~= newVal then
+    					self._value = newVal
+    					for _, listener in ipairs(self._listeners) do
+    						task.spawn(listener, newVal)
     					end
-    				end)
+    				end
+    			else
+    				warn("Computed value error: " .. tostring(newVal))
     			end
-    
-    			update()
     		end
-    		setup(obj,data)
+    
+    		for _, dep in ipairs(dependencies) do
+    			if type(dep) == "table" and dep.onChange then
+    				local conn = dep:onChange(update)
+    				table.insert(self._connections, conn)
+    			end
+    		end
+    
+    		self._value = callback()
+    		return self
+    	end
+    
+    	function ComputedCell:get()
+    		return self._value
+    	end
+    
+    	function ComputedCell:onChange(callback)
+    		table.insert(self._listeners, callback)
+    		return {
+    			Disconnect = function()
+    				local pos = table.find(self._listeners, callback)
+    				if pos then
+    					table.remove(self._listeners, pos)
+    				end
+    			end
+    		}
+    	end
+    
+    	function ComputedCell:__call()
+    		return self:get()
+    	end
+    
+    	local function Bind(instance, properties)
+    		local connections = {}
+    
+    		for propName, propValue in pairs(properties) do
+    			if type(propValue) == "table" and propValue.get and propValue.onChange then
+    				-- It's a state or computed object
+    				local function update(val)
+    					if instance and instance.Parent then
+    						local ok, err = pcall(function()
+    							instance[propName] = val
+    						end)
+    						if not ok then
+    							warn("Failed to update bound property " .. propName .. " on " .. tostring(instance) .. ": " .. tostring(err))
+    						end
+    					end
+    				end
+    
+    				-- Initial update
+    				update(propValue:get())
+    
+    				-- Connect listener
+    				local conn = propValue:onChange(update)
+    				table.insert(connections, conn)
+    			else
+    				-- Standard value assignment
+    				instance[propName] = propValue
+    			end
+    		end
+    
+    		-- Clean up when the GuiInstance is destroyed
+    		local destroyConn
+    		local hasDestroying = pcall(function() return instance.Destroying end)
+    		if hasDestroying then
+    			destroyConn = instance.Destroying:Connect(function()
+    				if destroyConn then destroyConn:Disconnect() end
+    				for _, conn in ipairs(connections) do
+    					conn:Disconnect()
+    				end
+    			end)
+    		else
+    			destroyConn = instance.AncestryChanged:Connect(function(_, parent)
+    				if parent == nil then
+    					if destroyConn then destroyConn:Disconnect() end
+    					for _, conn in ipairs(connections) do
+    						conn:Disconnect()
+    					end
+    				end
+    			end)
+    		end
     
     		return {
-    			SetData = function(obj,data)
-    				setup(obj,data)
-    			end,
-    			Enable = function()
-    				disabled = false
-    				update()
-    			end,
-    			Disable = function()
-    				disabled = true
-    			end,
-    			Destroy = function()
-    				con:Disconnect()
-    				con = nil
-    			end,
+    			Disconnect = function()
+    				if destroyConn then destroyConn:Disconnect() end
+    				for _, conn in ipairs(connections) do
+    					conn:Disconnect()
+    				end
+    			end
     		}
     	end
     
-    	Lib.ProtectedGuis = {}
+    	State.new = StateCell.new
+    	State.Computed = ComputedCell.new
+    	State.Bind = Bind
     
-    	Lib.ShowGui = Main.SecureGui
+    	return State
+    end
     
-    	Lib.ColorToBytes = function(col)
-    		local round = math.round
-    		return string.format("%d, %d, %d",round(col.r*255),round(col.g*255),round(col.b*255))
-    	end
-    
-    	Lib.ReadFile = function(filename)
-    		if not env.readfile then return end
-    
-    		local s,contents = pcall(env.readfile,filename)
-    		if s and contents then return contents end
-    	end
-    
-    	Lib.DeferFunc = function(f,...)
-    		signalWait(renderStepped)
-    		return f(...)
-    	end
-    
-    	Lib.LoadCustomAsset = function(filepath)
-    		if not env.getcustomasset or not env.isfile or not env.isfile(filepath) then return end
-    
-    		return env.getcustomasset(filepath)
-    	end
-    
-    	Lib.FetchCustomAsset = function(url,filepath)
-    		if not env.writefile then return end
-    
-    		local s,data = pcall(oldgame.HttpGet,game,url)
-    		if not s then return end
-    
-    		env.writefile(filepath,data)
-    		return Lib.LoadCustomAsset(filepath)
-    	end
+    if gethsfuncs then
+    	_G.moduleData = {InitDeps = initDeps, InitAfterMain = initAfterMain, Main = main}
+    else
+    	return {InitDeps = initDeps, InitAfterMain = initAfterMain, Main = main}
+    end
+end,
+["IconData"] = function()
+    --[[
+    	IconData Module
     	
-    	local currentfilename, currentextension, currentclickhandler
-    	currentclickhandler = function() end
-    	Lib.SaveAsPrompt = function(filename, codeToSave, ext)		
-    		local win = Notepad.SaveAsWindow
-    		if not win then
-    			win = Lib.Window.new()
-    			win.Alignable = false
-    			win.Resizable = false
-    			win:SetTitle("Save As")
-    			win:SetSize(300,95)
+    	Pure data: Roblox class name -> icon index mapping tables.
+    	Used by Lib.IconMap.
+    ]]
     
-    			local saveButton = Lib.Button.new()
-    			local nameLabel = Lib.Label.new()
-    			nameLabel.Text = "Name"
-    			nameLabel.Position = UDim2.new(0,30,0,10)
-    			nameLabel.Size = UDim2.new(0,40,0,20)
-    			win:Add(nameLabel)
+    local Main, Lib, Apps, Settings
     
-    			local nameBox = Lib.ViewportTextBox.new()
-    			nameBox.Position = UDim2.new(0,75,0,10)
-    			nameBox.Size = UDim2.new(0,220,0,20)
-    			win:Add(nameBox,"NameBox")
+    local function initDeps(data)
+    	Main = data.Main
+    	Lib = data.Lib
+    	Apps = data.Apps
+    	Settings = data.Settings
+    end
     
-    			--nameBox.TextBox.Text = filename or ""
+    local function initAfterMain()
+    end
     
-    			nameBox.TextBox:GetPropertyChangedSignal("Text"):Connect(function()
-    				saveButton:SetDisabled(#nameBox:GetText() == 0)
-    			end)
-    
-    			local errorLabel = Lib.Label.new()
-    			errorLabel.Text = ""
-    			errorLabel.Position = UDim2.new(0,5,1,-45)
-    			errorLabel.Size = UDim2.new(1,-10,0,20)
-    			errorLabel.TextColor3 = Settings.Theme.Important
-    			win.ErrorLabel = errorLabel
-    			win:Add(errorLabel,"Error")
-    
-    			local cancelButton = Lib.Button.new()
-    			cancelButton.AnchorPoint = Vector2.new(1,1)
-    			cancelButton.Text = "Cancel"
-    			cancelButton.Position = UDim2.new(1,-5,1,-5)
-    			cancelButton.Size = UDim2.new(0.5,-10,0,20)
-    			cancelButton.OnClick:Connect(function()
-    				win:Close()
-    			end)
-    			win:Add(cancelButton)
-    
-    			saveButton.Text = "Save"
-    			saveButton.AnchorPoint = Vector2.new(0,1)
-    			saveButton.Position = UDim2.new(0,5,1,-5)
-    			saveButton.Size = UDim2.new(0.5,-5,0,20)
-    			saveButton.OnClick:Connect(function()
-    				currentclickhandler()
-    			end)
-    
-    			win:Add(saveButton,"SaveButton")
-    
-    			Notepad.SaveAsWindow = win
-    		end
-    
-    		currentclickhandler = function()
-    			if type(codeToSave) == "string" then
-    				filename = (win.Elements.NameBox.TextBox.Text ~= "" and win.Elements.NameBox.TextBox.Text) or filename
-    				currentextension = ext or filename:match("%.([^%.]+)$") or "txt"
-    				filename = filename:gsub("%.[^.]+$", "") .. "." .. currentextension
-    
-    				local codeText = codeToSave or ""
-    				if env.writefile then
-    					local s, msg = pcall(env.writefile, filename, codeText)
-    					if not s then
-    						win.Elements.Error.Text = "Error: " .. msg
-    						task.spawn(error, msg)
-    						task.wait(1)
-    					end
-    				else
-    					win.Elements.Error.Text = "Your executor does not support 'writefile'"
-    					task.wait(1)
-    				end
-    			elseif type(codeToSave) == "function" then
-    				filename = (win.Elements.NameBox.TextBox.Text ~= "" and win.Elements.NameBox.TextBox.Text) or filename
-    				currentextension = ext or filename:match("%.([^%.]+)$") or "txt"
-    				filename = filename:gsub("%.[^.]+$", "") .. "." .. currentextension
-    
-    				local s, msg = pcall(codeToSave,filename) -- callback
-    				if not s then
-    					win.Elements.Error.Text = "Error: " .. msg
-    					task.spawn(error, msg)
-    					Lib.FastWait(1)
-    				end
-    			end
-    			win:Close()
-    		end
-    
-    		win:SetTitle("Save As")
-    		win.Elements.Error.Text = ""
-    		win.Elements.NameBox:SetText(filename or "")
-    		
-    		win.Elements.SaveButton:SetDisabled(win.Elements.NameBox:GetText() == 0)
-    		
-    		win:Show()
-    	end
-    	
-    	-- Classes
-    
-    	Lib.Signal = (function()
-    		local funcs = {}
-    
-    		local disconnect = function(con)
-    			local pos = table.find(con.Signal.Connections,con)
-    			if pos then table.remove(con.Signal.Connections,pos) end
-    		end
-    
-    		funcs.Connect = function(self,func)
-    			if type(func) ~= "function" then error("Attempt to connect a non-function") end		
-    			local con = {
-    				Signal = self,
-    				Func = func,
-    				Disconnect = disconnect
-    			}
-    			self.Connections[#self.Connections+1] = con
-    			return con
-    		end
-    
-    		funcs.Fire = function(self,...)
-    			for i,v in next,self.Connections do
-    				xpcall(coroutine.wrap(v.Func),function(e) warn(e.."\n"..debug.traceback()) end,...)
-    			end
-    		end
-    
-    		local mt = {
-    			__index = funcs,
-    			__tostring = function(self)
-    				return "Signal: " .. tostring(#self.Connections) .. " Connections"
-    			end
-    		}
-    
-    		local function new()
-    			local obj = {}
-    			obj.Connections = {}
-    
-    			return setmetatable(obj,mt)
-    		end
-    
-    		return {new = new}
-    	end)()
-    
-    	Lib.Set = (function()
-    		local funcs = {}
-    
-    		funcs.Add = function(self,obj)
-    			if self.Map[obj] then return end
-    
-    			local list = self.List
-    			list[#list+1] = obj
-    			self.Map[obj] = true
-    			self.Changed:Fire()
-    		end
-    
-    		funcs.AddTable = function(self,t)
-    			local changed
-    			local list,map = self.List,self.Map
-    			for i = 1,#t do
-    				local elem = t[i]
-    				if not map[elem] then
-    					list[#list+1] = elem
-    					map[elem] = true
-    					changed = true
-    				end
-    			end
-    			if changed then self.Changed:Fire() end
-    		end
-    
-    		funcs.Remove = function(self,obj)
-    			if not self.Map[obj] then return end
-    
-    			local list = self.List
-    			local pos = table.find(list,obj)
-    			if pos then table.remove(list,pos) end
-    			self.Map[obj] = nil
-    			self.Changed:Fire()
-    		end
-    
-    		funcs.RemoveTable = function(self,t)
-    			local changed
-    			local list,map = self.List,self.Map
-    			local removeSet = {}
-    			for i = 1,#t do
-    				local elem = t[i]
-    				map[elem] = nil
-    				removeSet[elem] = true
-    			end
-    
-    			for i = #list,1,-1 do
-    				local elem = list[i]
-    				if removeSet[elem] then
-    					table.remove(list,i)
-    					changed = true
-    				end
-    			end
-    			if changed then self.Changed:Fire() end
-    		end
-    
-    		funcs.Set = function(self,obj)
-    			if #self.List == 1 and self.List[1] == obj then return end
-    
-    			self.List = {obj}
-    			self.Map = {[obj] = true}
-    			self.Changed:Fire()
-    		end
-    
-    		funcs.SetTable = function(self,t)
-    			local newList,newMap = {},{}
-    			self.List,self.Map = newList,newMap
-    			table.move(t,1,#t,1,newList)
-    			for i = 1,#t do
-    				newMap[t[i]] = true
-    			end
-    			self.Changed:Fire()
-    		end
-    
-    		funcs.Clear = function(self)
-    			if #self.List == 0 then return end
-    			self.List = {}
-    			self.Map = {}
-    			self.Changed:Fire()
-    		end
-    
-    		local mt = {__index = funcs}
-    
-    		local function new()
-    			local obj = setmetatable({
-    				List = {},
-    				Map = {},
-    				Changed = Lib.Signal.new()
-    			},mt)
-    
-    			return obj
-    		end
-    
-    		return {new = new}
-    	end)()
-    	
-    	Lib.IconMap = (function()
-    		local funcs = {}
-    		local IconList = {
+    local function main()
+    	local IconData = {
     			Old = {
     				MapId = 483448923,
     				IconSize = 16,
@@ -2101,7 +1593,773 @@ end,
     				Witdh = 18,
     				Height = 18,
     			}
+    	}
+    
+    	return IconData
+    end
+    
+    if gethsfuncs then
+    	_G.moduleData = {InitDeps = initDeps, InitAfterMain = initAfterMain, Main = main}
+    else
+    	return {InitDeps = initDeps, InitAfterMain = initAfterMain, Main = main}
+    end
+end,
+["Lib"] = function()
+    --[[
+    	Lib Module
+    	
+    	Container for functions and classes
+    ]]
+    
+    -- Common Locals
+    local Main,Lib,Apps,Settings -- Main Containers
+    local Explorer, Properties, Notepad, Notebook -- Major Apps
+    local API,RMD,env,service,plr,create,createSimple -- Main Locals
+    
+    local function initDeps(data)
+    	Main = data.Main
+    	Lib = data.Lib
+    	Apps = data.Apps
+    	Settings = data.Settings
+    
+    	API = data.API
+    	RMD = data.RMD
+    	env = data.env
+    	service = data.service
+    	plr = data.plr
+    	create = data.create
+    	createSimple = data.createSimple
+    end
+    
+    local function initAfterMain()
+    	Explorer = Apps.Explorer
+    	Properties = Apps.Properties
+    	Notepad = Apps.Notepad
+    	Notebook = Apps.Notebook
+    
+    	local stateModule = Apps.State
+    	if stateModule then
+    		Lib.State = stateModule.new
+    		Lib.Computed = stateModule.Computed
+    		Lib.Bind = stateModule.Bind
+    	end
+    end
+    
+    local function main()
+    	local Lib = {}
+    	Lib.create = create
+    	Lib.createSimple = createSimple
+    
+    	local renderStepped = service.RunService.RenderStepped
+    	local signalWait = renderStepped.wait
+    	local PH = newproxy() -- Placeholder, must be replaced in constructor
+    	local SIGNAL = newproxy()
+    
+    	-- Usually for classes that work with a Roblox Object
+    	local function initObj(props,mt)
+    		local type = type
+    		local function copy(t)
+    			local res = {}
+    			for i,v in pairs(t) do
+    				if v == SIGNAL then
+    					res[i] = Lib.Signal.new()
+    				elseif type(v) == "table" then
+    					res[i] = copy(v)
+    				else
+    					res[i] = v
+    				end
+    			end		
+    			return res
+    		end
+    
+    		local newObj = copy(props)
+    		return setmetatable(newObj,mt)
+    	end
+    
+    	local function getGuiMT(props,funcs)
+    		return {__index = function(self,ind) if not props[ind] then return funcs[ind] or self.Gui[ind] end end,
+    		__newindex = function(self,ind,val) if not props[ind] then self.Gui[ind] = val else rawset(self,ind,val) end end}
+    	end
+    
+    	-- Functions
+    
+    	Lib.FormatLuaString = (function()
+    		local string = string
+    		local gsub = string.gsub
+    		local format = string.format
+    		local char = string.char
+    		local cleanTable = {['"'] = '\\"', ['\\'] = '\\\\'}
+    		for i = 0,31 do
+    			cleanTable[char(i)] = "\\"..format("%03d",i)
+    		end
+    		for i = 127,255 do
+    			cleanTable[char(i)] = "\\"..format("%03d",i)
+    		end
+    
+    		return function(str)
+    			return gsub(str,"[\"\\\0-\31\127-\255]",cleanTable)
+    		end
+    	end)()
+    
+    	Lib.getSafePath = function(obj)
+    		if not obj then return "?" end
+    		if obj.Parent == nil then return "Nil parented" end
+    		local ok, path = pcall(function()
+    			if _G.Main and _G.Main.SafeGetInstancePath then return _G.Main.SafeGetInstancePath(obj) end
+    			if _G.Apps and _G.Apps.Explorer and _G.Apps.Explorer.GetInstancePath then return _G.Apps.Explorer.GetInstancePath(obj) end
+    			return obj:GetFullName()
+    		end)
+    		return ok and tostring(path) or tostring(obj)
+    	end
+    
+    	Lib.CheckMouseInGui = function(gui)
+    		if gui == nil then return false end
+    		
+    		-- Support SurfaceGui coordinates by raycasting to the Adornee part
+    		local surfaceGui = gui:FindFirstAncestorOfClass("SurfaceGui")
+    		if surfaceGui then
+    			local part = surfaceGui.Adornee or surfaceGui.Parent
+    			if part and part:IsA("BasePart") then
+    				local camera = workspace.CurrentCamera
+    				local pos = service.UserInputService:GetMouseLocation()
+    				local mouseRay = camera:ViewportPointToRay(pos.X, pos.Y)
+    				local params = RaycastParams.new()
+    				params.FilterType = Enum.RaycastFilterType.Include
+    				params.FilterDescendantsInstances = {part}
+    				params.IgnoreWater = true
+    				local result = workspace:Raycast(mouseRay.Origin, mouseRay.Direction * 1000, params)
+    				if result then
+    					return true
+    				end
+    			end
+    			return false
+    		end
+    
+    		local mouse = Main.Mouse
+    		local guiPosition = gui.AbsolutePosition
+    		local guiSize = gui.AbsoluteSize	
+    
+    		return mouse.X >= guiPosition.X and mouse.X < guiPosition.X + guiSize.X and mouse.Y >= guiPosition.Y and mouse.Y < guiPosition.Y + guiSize.Y
+    	end
+    
+    	Lib.IsShiftDown = function()
+    		return service.UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+    	end
+    
+    	Lib.IsCtrlDown = function()
+    		return service.UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or service.UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+    	end
+    
+    	Lib.CreateArrow = function(size,num,dir)
+    		local max = num
+    		local arrowFrame = createSimple("Frame",{
+    			BackgroundTransparency = 1,
+    			Name = "Arrow",
+    			Size = UDim2.new(0,size,0,size)
+    		})
+    		if dir == "up" then
+    			for i = 1,num do
+    				local newLine = createSimple("Frame",{
+    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
+    					BorderSizePixel = 0,
+    					Position = UDim2.new(0,math.floor(size/2)-(i-1),0,math.floor(size/2)+i-math.floor(max/2)-1),
+    					Size = UDim2.new(0,i+(i-1),0,1),
+    					Parent = arrowFrame
+    				})
+    			end
+    			return arrowFrame
+    		elseif dir == "down" then
+    			for i = 1,num do
+    				local newLine = createSimple("Frame",{
+    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
+    					BorderSizePixel = 0,
+    					Position = UDim2.new(0,math.floor(size/2)-(i-1),0,math.floor(size/2)-i+math.floor(max/2)+1),
+    					Size = UDim2.new(0,i+(i-1),0,1),
+    					Parent = arrowFrame
+    				})
+    			end
+    			return arrowFrame
+    		elseif dir == "left" then
+    			for i = 1,num do
+    				local newLine = createSimple("Frame",{
+    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
+    					BorderSizePixel = 0,
+    					Position = UDim2.new(0,math.floor(size/2)+i-math.floor(max/2)-1,0,math.floor(size/2)-(i-1)),
+    					Size = UDim2.new(0,1,0,i+(i-1)),
+    					Parent = arrowFrame
+    				})
+    			end
+    			return arrowFrame
+    		elseif dir == "right" then
+    			for i = 1,num do
+    				local newLine = createSimple("Frame",{
+    					BackgroundColor3 = Color3.new(220/255,220/255,220/255),
+    					BorderSizePixel = 0,
+    					Position = UDim2.new(0,math.floor(size/2)-i+math.floor(max/2)+1,0,math.floor(size/2)-(i-1)),
+    					Size = UDim2.new(0,1,0,i+(i-1)),
+    					Parent = arrowFrame
+    				})
+    			end
+    			return arrowFrame
+    		end
+    		error("r u ok")
+    	end
+    
+    	Lib.ParseXML = (function()
+    		local func = function()
+    			-- Only exists to parse RMD
+    			-- from https://github.com/jonathanpoelen/xmlparser
+    
+    			local string, print, pairs = string, print, pairs
+    
+    			-- http://lua-users.org/wiki/StringTrim
+    			local trim = function(s)
+    				local from = s:match"^%s*()"
+    				return from > #s and "" or s:match(".*%S", from)
+    			end
+    
+    			local gtchar = string.byte('>', 1)
+    			local slashchar = string.byte('/', 1)
+    			local D = string.byte('D', 1)
+    			local E = string.byte('E', 1)
+    
+    			function parse(s, evalEntities)
+    				-- remove comments
+    				s = s:gsub('<!%-%-(.-)%-%->', '')
+    
+    				local entities, tentities = {}
+    
+    				if evalEntities then
+    					local pos = s:find('<[_%w]')
+    					if pos then
+    						s:sub(1, pos):gsub('<!ENTITY%s+([_%w]+)%s+(.)(.-)%2', function(name, q, entity)
+    							entities[#entities+1] = {name=name, value=entity}
+    						end)
+    						tentities = createEntityTable(entities)
+    						s = replaceEntities(s:sub(pos), tentities)
+    					end
+    				end
+    
+    				local t, l = {}, {}
+    
+    				local addtext = function(txt)
+    					txt = txt:match'^%s*(.*%S)' or ''
+    					if #txt ~= 0 then
+    						t[#t+1] = {text=txt}
+    					end		
+    				end
+    
+    				s:gsub('<([?!/]?)([-:_%w]+)%s*(/?>?)([^<]*)', function(type, name, closed, txt)
+    					-- open
+    					if #type == 0 then
+    						local a = {}
+    						if #closed == 0 then
+    							local len = 0
+    							for all,aname,_,value,starttxt in string.gmatch(txt, "(.-([-_%w]+)%s*=%s*(.)(.-)%3%s*(/?>?))") do
+    								len = len + #all
+    								a[aname] = value
+    								if #starttxt ~= 0 then
+    									txt = txt:sub(len+1)
+    									closed = starttxt
+    									break
+    								end
+    							end
+    						end
+    						t[#t+1] = {tag=name, attrs=a, children={}}
+    
+    						if closed:byte(1) ~= slashchar then
+    							l[#l+1] = t
+    							t = t[#t].children
+    						end
+    
+    						addtext(txt)
+    						-- close
+    					elseif '/' == type then
+    						t = l[#l]
+    						l[#l] = nil
+    
+    						addtext(txt)
+    						-- ENTITY
+    					elseif '!' == type then
+    						if E == name:byte(1) then
+    							txt:gsub('([_%w]+)%s+(.)(.-)%2', function(name, q, entity)
+    								entities[#entities+1] = {name=name, value=entity}
+    							end, 1)
+    						end
+    						-- elseif '?' == type then
+    						--	 print('?	' .. name .. ' // ' .. attrs .. '$$')
+    						-- elseif '-' == type then
+    						--	 print('comment	' .. name .. ' // ' .. attrs .. '$$')
+    						-- else
+    						--	 print('o	' .. #p .. ' // ' .. name .. ' // ' .. attrs .. '$$')
+    					end
+    				end)
+    
+    				return {children=t, entities=entities, tentities=tentities}
+    			end
+    
+    			function parseText(txt)
+    				return parse(txt)
+    			end
+    
+    			function defaultEntityTable()
+    				return { quot='"', apos='\'', lt='<', gt='>', amp='&', tab='\t', nbsp=' ', }
+    			end
+    
+    			function replaceEntities(s, entities)
+    				return s:gsub('&([^;]+);', entities)
+    			end
+    
+    			function createEntityTable(docEntities, resultEntities)
+    				entities = resultEntities or defaultEntityTable()
+    				for _,e in pairs(docEntities) do
+    					e.value = replaceEntities(e.value, entities)
+    					entities[e.name] = e.value
+    				end
+    				return entities
+    			end
+    
+    			return parseText
+    		end
+    		local newEnv = setmetatable({},{__index = getfenv()})
+    		setfenv(func,newEnv)
+    		return func()
+    	end)()
+    
+    	Lib.FastWait = function(s)
+    		if not s then return signalWait(renderStepped) end
+    		local start = tick()
+    		while tick() - start < s do signalWait(renderStepped) end
+    	end
+    
+    	Lib.ButtonAnim = function(button,data)
+    		local holding = false
+    		local disabled = false
+    		local mode = data and data.Mode or 1
+    		local control = {}
+    
+    		if mode == 2 then
+    			local lerpTo = data.LerpTo or Color3.new(0,0,0)
+    			local delta = data.LerpDelta or 0.2
+    			control.StartColor = data.StartColor or button.BackgroundColor3
+    			control.PressColor = data.PressColor or control.StartColor:lerp(lerpTo,delta)
+    			control.HoverColor = data.HoverColor or control.StartColor:lerp(control.PressColor,0.6)
+    			control.OutlineColor = data.OutlineColor
+    		end
+    
+    		button.InputBegan:Connect(function(input)
+    			if disabled then return end
+    
+    			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+    				if not holding then
+    					if mode == 1 then
+    						button.BackgroundTransparency = 0.4
+    					elseif mode == 2 then
+    						button.BackgroundColor3 = control.HoverColor
+    					end
+    				end
+    			elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+    				holding = true
+    				if mode == 1 then
+    					button.BackgroundTransparency = 0
+    				elseif mode == 2 then
+    					button.BackgroundColor3 = control.PressColor
+    					if control.OutlineColor then button.BorderColor3 = control.PressColor end
+    				end
+    			end
+    		end)
+    
+    		button.InputEnded:Connect(function(input)
+    			if disabled then return end
+    
+    			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+    				if not holding then
+    					if mode == 1 then
+    						button.BackgroundTransparency = 1
+    					elseif mode == 2 then
+    						button.BackgroundColor3 = control.StartColor
+    					end
+    				end
+    			elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+    				holding = false
+    				if mode == 1 then
+    					button.BackgroundTransparency = Lib.CheckMouseInGui(button) and 0.4 or 1
+    				elseif mode == 2 then
+    					button.BackgroundColor3 = Lib.CheckMouseInGui(button) and control.HoverColor or control.StartColor
+    					if control.OutlineColor then button.BorderColor3 = control.OutlineColor end
+    				end
+    			end
+    		end)
+    
+    		control.Disable = function()
+    			disabled = true
+    			holding = false
+    
+    			if mode == 1 then
+    				button.BackgroundTransparency = 1
+    			elseif mode == 2 then
+    				button.BackgroundColor3 = control.StartColor
+    			end
+    		end
+    
+    		control.Enable = function()
+    			disabled = false
+    		end
+    
+    		return control
+    	end
+    
+    	Lib.FindAndRemove = function(t,item)
+    		local pos = table.find(t,item)
+    		if pos then table.remove(t,pos) end
+    	end
+    
+    	Lib.AttachTo = function(obj,data)
+    		local target,posOffX,posOffY,sizeOffX,sizeOffY,resize,con
+    		local disabled = false
+    
+    		local function update()
+    			if not obj or not target then return end
+    
+    			local targetPos = target.AbsolutePosition
+    			local targetSize = target.AbsoluteSize
+    			obj.Position = UDim2.new(0,targetPos.X + posOffX,0,targetPos.Y + posOffY)
+    			if resize then obj.Size = UDim2.new(0,targetSize.X + sizeOffX,0,targetSize.Y + sizeOffY) end
+    		end
+    
+    		local function setup(o,data)
+    			obj = o
+    			data = data or {}
+    			target = data.Target
+    			posOffX = data.PosOffX or 0
+    			posOffY = data.PosOffY or 0
+    			sizeOffX = data.SizeOffX or 0
+    			sizeOffY = data.SizeOffY or 0
+    			resize = data.Resize or false
+    
+    			if con then con:Disconnect() con = nil end
+    			if target then
+    				con = target.Changed:Connect(function(prop)
+    					if not disabled and prop == "AbsolutePosition" or prop == "AbsoluteSize" then
+    						update()
+    					end
+    				end)
+    			end
+    
+    			update()
+    		end
+    		setup(obj,data)
+    
+    		return {
+    			SetData = function(obj,data)
+    				setup(obj,data)
+    			end,
+    			Enable = function()
+    				disabled = false
+    				update()
+    			end,
+    			Disable = function()
+    				disabled = true
+    			end,
+    			Destroy = function()
+    				con:Disconnect()
+    				con = nil
+    			end,
     		}
+    	end
+    
+    	Lib.ProtectedGuis = {}
+    
+    	Lib.ShowGui = Main.SecureGui
+    
+    	Lib.ColorToBytes = function(col)
+    		local round = math.round
+    		return string.format("%d, %d, %d",round(col.r*255),round(col.g*255),round(col.b*255))
+    	end
+    
+    	Lib.ReadFile = function(filename)
+    		if not env.readfile then return end
+    
+    		local s,contents = pcall(env.readfile,filename)
+    		if s and contents then return contents end
+    	end
+    
+    	Lib.DeferFunc = function(f,...)
+    		signalWait(renderStepped)
+    		return f(...)
+    	end
+    
+    	Lib.LoadCustomAsset = function(filepath)
+    		if not env.getcustomasset or not env.isfile or not env.isfile(filepath) then return end
+    
+    		return env.getcustomasset(filepath)
+    	end
+    
+    	Lib.FetchCustomAsset = function(url,filepath)
+    		if not env.writefile then return end
+    
+    		local data
+    		if oldgame and oldgame.HttpGet then
+    			local s, result = pcall(oldgame.HttpGet, game, url)
+    			if not s then return end
+    			data = result
+    		elseif env.HttpGet then
+    			local s, result = pcall(env.HttpGet, url)
+    			if not s then return end
+    			data = result
+    		else
+    			return
+    		end
+    
+    		env.writefile(filepath,data)
+    		return Lib.LoadCustomAsset(filepath)
+    	end
+    	
+    	local currentfilename, currentextension, currentclickhandler
+    	currentclickhandler = function() end
+    	Lib.SaveAsPrompt = function(filename, codeToSave, ext)		
+    		local win = Notepad.SaveAsWindow
+    		if not win then
+    			win = Lib.Window.new()
+    			win.Alignable = false
+    			win.Resizable = false
+    			win:SetTitle("Save As")
+    			win:SetSize(300,95)
+    
+    			local saveButton = Lib.Button.new()
+    			local nameLabel = Lib.Label.new()
+    			nameLabel.Text = "Name"
+    			nameLabel.Position = UDim2.new(0,30,0,10)
+    			nameLabel.Size = UDim2.new(0,40,0,20)
+    			win:Add(nameLabel)
+    
+    			local nameBox = Lib.ViewportTextBox.new()
+    			nameBox.Position = UDim2.new(0,75,0,10)
+    			nameBox.Size = UDim2.new(0,220,0,20)
+    			win:Add(nameBox,"NameBox")
+    
+    			--nameBox.TextBox.Text = filename or ""
+    
+    			nameBox.TextBox:GetPropertyChangedSignal("Text"):Connect(function()
+    				saveButton:SetDisabled(#nameBox:GetText() == 0)
+    			end)
+    
+    			local errorLabel = Lib.Label.new()
+    			errorLabel.Text = ""
+    			errorLabel.Position = UDim2.new(0,5,1,-45)
+    			errorLabel.Size = UDim2.new(1,-10,0,20)
+    			errorLabel.TextColor3 = Settings.Theme.Important
+    			win.ErrorLabel = errorLabel
+    			win:Add(errorLabel,"Error")
+    
+    			local cancelButton = Lib.Button.new()
+    			cancelButton.AnchorPoint = Vector2.new(1,1)
+    			cancelButton.Text = "Cancel"
+    			cancelButton.Position = UDim2.new(1,-5,1,-5)
+    			cancelButton.Size = UDim2.new(0.5,-10,0,20)
+    			cancelButton.OnClick:Connect(function()
+    				win:Close()
+    			end)
+    			win:Add(cancelButton)
+    
+    			saveButton.Text = "Save"
+    			saveButton.AnchorPoint = Vector2.new(0,1)
+    			saveButton.Position = UDim2.new(0,5,1,-5)
+    			saveButton.Size = UDim2.new(0.5,-5,0,20)
+    			saveButton.OnClick:Connect(function()
+    				currentclickhandler()
+    			end)
+    
+    			win:Add(saveButton,"SaveButton")
+    
+    			Notepad.SaveAsWindow = win
+    		end
+    
+    		currentclickhandler = function()
+    			if type(codeToSave) == "string" then
+    				filename = (win.Elements.NameBox.TextBox.Text ~= "" and win.Elements.NameBox.TextBox.Text) or filename
+    				currentextension = ext or filename:match("%.([^%.]+)$") or "txt"
+    				filename = filename:gsub("%.[^.]+$", "") .. "." .. currentextension
+    
+    				local codeText = codeToSave or ""
+    				if env.writefile then
+    					local s, msg = pcall(env.writefile, filename, codeText)
+    					if not s then
+    						win.Elements.Error.Text = "Error: " .. msg
+    						task.spawn(error, msg)
+    						task.wait(1)
+    					end
+    				else
+    					win.Elements.Error.Text = "Your executor does not support 'writefile'"
+    					task.wait(1)
+    				end
+    			elseif type(codeToSave) == "function" then
+    				filename = (win.Elements.NameBox.TextBox.Text ~= "" and win.Elements.NameBox.TextBox.Text) or filename
+    				currentextension = ext or filename:match("%.([^%.]+)$") or "txt"
+    				filename = filename:gsub("%.[^.]+$", "") .. "." .. currentextension
+    
+    				local s, msg = pcall(codeToSave,filename) -- callback
+    				if not s then
+    					win.Elements.Error.Text = "Error: " .. msg
+    					task.spawn(error, msg)
+    					Lib.FastWait(1)
+    				end
+    			end
+    			win:Close()
+    		end
+    
+    		win:SetTitle("Save As")
+    		win.Elements.Error.Text = ""
+    		win.Elements.NameBox:SetText(filename or "")
+    		
+    		win.Elements.SaveButton:SetDisabled(win.Elements.NameBox:GetText() == 0)
+    		
+    		win:Show()
+    	end
+    	
+    	-- Classes
+    
+    	Lib.Signal = (function()
+    		local funcs = {}
+    
+    		local disconnect = function(con)
+    			local pos = table.find(con.Signal.Connections,con)
+    			if pos then table.remove(con.Signal.Connections,pos) end
+    		end
+    
+    		funcs.Connect = function(self,func)
+    			if type(func) ~= "function" then error("Attempt to connect a non-function") end		
+    			local con = {
+    				Signal = self,
+    				Func = func,
+    				Disconnect = disconnect
+    			}
+    			self.Connections[#self.Connections+1] = con
+    			return con
+    		end
+    
+    		funcs.Fire = function(self,...)
+    			for i,v in next,self.Connections do
+    				xpcall(coroutine.wrap(v.Func),function(e) warn(e.."\n"..debug.traceback()) end,...)
+    			end
+    		end
+    
+    		local mt = {
+    			__index = funcs,
+    			__tostring = function(self)
+    				return "Signal: " .. tostring(#self.Connections) .. " Connections"
+    			end
+    		}
+    
+    		local function new()
+    			local obj = {}
+    			obj.Connections = {}
+    
+    			return setmetatable(obj,mt)
+    		end
+    
+    		return {new = new}
+    	end)()
+    
+    	Lib.Set = (function()
+    		local funcs = {}
+    
+    		funcs.Add = function(self,obj)
+    			if self.Map[obj] then return end
+    
+    			local list = self.List
+    			list[#list+1] = obj
+    			self.Map[obj] = true
+    			self.Changed:Fire()
+    		end
+    
+    		funcs.AddTable = function(self,t)
+    			local changed
+    			local list,map = self.List,self.Map
+    			for i = 1,#t do
+    				local elem = t[i]
+    				if not map[elem] then
+    					list[#list+1] = elem
+    					map[elem] = true
+    					changed = true
+    				end
+    			end
+    			if changed then self.Changed:Fire() end
+    		end
+    
+    		funcs.Remove = function(self,obj)
+    			if not self.Map[obj] then return end
+    
+    			local list = self.List
+    			local pos = table.find(list,obj)
+    			if pos then table.remove(list,pos) end
+    			self.Map[obj] = nil
+    			self.Changed:Fire()
+    		end
+    
+    		funcs.RemoveTable = function(self,t)
+    			local changed
+    			local list,map = self.List,self.Map
+    			local removeSet = {}
+    			for i = 1,#t do
+    				local elem = t[i]
+    				map[elem] = nil
+    				removeSet[elem] = true
+    			end
+    
+    			for i = #list,1,-1 do
+    				local elem = list[i]
+    				if removeSet[elem] then
+    					table.remove(list,i)
+    					changed = true
+    				end
+    			end
+    			if changed then self.Changed:Fire() end
+    		end
+    
+    		funcs.Set = function(self,obj)
+    			if #self.List == 1 and self.List[1] == obj then return end
+    
+    			self.List = {obj}
+    			self.Map = {[obj] = true}
+    			self.Changed:Fire()
+    		end
+    
+    		funcs.SetTable = function(self,t)
+    			local newList,newMap = {},{}
+    			self.List,self.Map = newList,newMap
+    			table.move(t,1,#t,1,newList)
+    			for i = 1,#t do
+    				newMap[t[i]] = true
+    			end
+    			self.Changed:Fire()
+    		end
+    
+    		funcs.Clear = function(self)
+    			if #self.List == 0 then return end
+    			self.List = {}
+    			self.Map = {}
+    			self.Changed:Fire()
+    		end
+    
+    		local mt = {__index = funcs}
+    
+    		local function new()
+    			local obj = setmetatable({
+    				List = {},
+    				Map = {},
+    				Changed = Lib.Signal.new()
+    			},mt)
+    
+    			return obj
+    		end
+    
+    		return {new = new}
+    	end)()
+    	
+    	Lib.IconMap = (function()
+    		local funcs = {}
+    		local IconList = Apps.IconData
     		if Settings.ClassIcon and IconList[Settings.ClassIcon] then
     			funcs.ExplorerIcons = {
     				["MapId"] = IconList[Settings.ClassIcon].MapId,
@@ -6726,7 +6984,7 @@ end,
     ]]
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, Notebook -- Major Apps
+    local Explorer, Properties, Notepad -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -6748,8 +7006,7 @@ end,
     	Explorer = Apps.Explorer
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local Console = {}
@@ -7526,7 +7783,7 @@ end,
     
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, SettingsWindow, Notebook -- Major Apps
+    local Explorer, Properties, Notepad, SettingsWindow -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -7549,8 +7806,7 @@ end,
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
     	SettingsWindow = Apps.SettingsWindow
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local SettingsWindow = {}
@@ -7573,25 +7829,35 @@ end,
     		
     		-- Checkbox
     		local checkbox = Lib.Checkbox.new()
-    		
     		checkbox.Gui.Parent = frame.Gui
     		checkbox.Gui.Size = UDim2.new(0,15,0,15)
     		
     		-- Label
     		local label = Lib.Label.new()
-    		
     		label.Gui.Parent = frame.Gui
     		label.Gui.Size = UDim2.new(1, 0,1, -15)
     		label.Gui.Text = title
     		label.TextTruncate = Enum.TextTruncate.AtEnd
     		
-    		checkbox:SetState(default or false)
+    		if type(default) == "table" and default.onChange then
+    			checkbox:SetState(default:get())
+    			default:onChange(function(val)
+    				checkbox:SetState(val)
+    			end)
+    			checkbox.OnInput:Connect(function()
+    				default:set(checkbox.Toggled)
+    			end)
+    		else
+    			checkbox:SetState(default or false)
+    		end
     		
     		return checkbox
     	end
     	
     	local function AddTextbox(title, default, sizeX)
-    		default = default and tostring(default) or ""
+    		local isState = type(default) == "table" and default.onChange
+    		local defaultVal = isState and tostring(default:get()) or (default and tostring(default) or "")
+    
     		local frame = Lib.Frame.new()
     		frame.Gui.Parent = ListFrame
     		frame.Gui.Transparency = 1
@@ -7626,13 +7892,21 @@ end,
     
     		-- Label
     		local label = Lib.Label.new()
-    
     		label.Parent = frame.Gui
     		label.Size = UDim2.new(1, 0,1, -15)
     		label.Text = title
     		label.TextTruncate = Enum.TextTruncate.AtEnd
     
-    		textbox.Text = default
+    		textbox.Text = defaultVal
+    
+    		if isState then
+    			default:onChange(function(val)
+    				textbox.Text = tostring(val)
+    			end)
+    			textbox.FocusLost:Connect(function()
+    				default:set(textbox.Text)
+    			end)
+    		end
     
     		return textbox
     	end
@@ -7820,35 +8094,40 @@ end,
     		
     		AddSeperator("UI")
     		
-    		local titleonmiddle = AddCheckbox("Window Title On Middle", Settings.Window.TitleOnMiddle)
-    		titleonmiddle.OnInput:Connect(function()
-    			Settings.Window.TitleOnMiddle = titleonmiddle.Toggled
+    		local titleOnMiddleState = Lib.State(Settings.Window.TitleOnMiddle)
+    		titleOnMiddleState:onChange(function(val)
+    			Settings.Window.TitleOnMiddle = val
     		end)
+    		local titleonmiddle = AddCheckbox("Window Title On Middle", titleOnMiddleState)
     		
-    		local autocheckupdate = AddCheckbox("Auto Check Update", Settings.AutoCheckUpdate ~= false)
-    		autocheckupdate.OnInput:Connect(function()
-    			Settings.AutoCheckUpdate = autocheckupdate.Toggled
+    		local autoCheckUpdateState = Lib.State(Settings.AutoCheckUpdate ~= false)
+    		autoCheckUpdateState:onChange(function(val)
+    			Settings.AutoCheckUpdate = val
     		end)
+    		local autocheckupdate = AddCheckbox("Auto Check Update", autoCheckUpdateState)
     
-    		local updateRef = AddTextbox("Update Ref (tag recommended)", Settings.AutoUpdateRef or "v3.1", 120)
-    		updateRef.FocusLost:Connect(function()
-    			local ref = tostring(updateRef.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    			if ref == "" then
-    				ref = "v3.1"
-    				updateRef.Text = ref
-    			end
+    		local updateRefState = Lib.State(Settings.AutoUpdateRef or "v3.1")
+    		updateRefState:onChange(function(val)
+    			local ref = tostring(val):gsub("^%s+", ""):gsub("%s+$", "")
+    			if ref == "" then ref = "v3.1" end
     			Settings.AutoUpdateRef = ref
     		end)
+    		local updateRef = AddTextbox("Update Ref (tag recommended)", updateRefState, 120)
     
-    		local allowBranchUpdate = AddCheckbox("Allow Main/Master Update Ref", Settings.AutoUpdateAllowBranch == true)
-    		allowBranchUpdate.OnInput:Connect(function()
-    			Settings.AutoUpdateAllowBranch = allowBranchUpdate.Toggled
+    		local allowBranchUpdateState = Lib.State(Settings.AutoUpdateAllowBranch == true)
+    		allowBranchUpdateState:onChange(function(val)
+    			Settings.AutoUpdateAllowBranch = val
     		end)
+    		local allowBranchUpdate = AddCheckbox("Allow Main/Master Update Ref", allowBranchUpdateState)
     		
-    		local bgTransparency = AddTextbox("Background Transparency", tostring(Settings.Window.Transparency), 15)
-    		bgTransparency.FocusLost:Connect(function()
-    			Settings.Window.Transparency = tonumber(bgTransparency.Text)
+    		local bgTransparencyState = Lib.State(tostring(Settings.Window.Transparency))
+    		bgTransparencyState:onChange(function(val)
+    			local num = tonumber(val)
+    			if num then
+    				Settings.Window.Transparency = num
+    			end
     		end)
+    		local bgTransparency = AddTextbox("Background Transparency", bgTransparencyState, 15)
     		
     		local classIcon = AddDropdown("Class Icons", {"Old", "NewDark", "Vanilla3"}, Settings.ClassIcon, false, 100)
     		classIcon.OnSelect:Connect(function()
@@ -7857,35 +8136,40 @@ end,
     		
     		AddSeperator("Explorer")
     		
-    		local clickRename = AddCheckbox("Click to Rename", Settings.Explorer.ClickToRename)
-    		clickRename.OnInput:Connect(function()
-    			Settings.Explorer.ClickToRename = clickRename.Toggled
+    		local clickRenameState = Lib.State(Settings.Explorer.ClickToRename)
+    		clickRenameState:onChange(function(val)
+    			Settings.Explorer.ClickToRename = val
     		end)
+    		local clickRename = AddCheckbox("Click to Rename", clickRenameState)
     		
-    		local partSelectionBox = AddCheckbox("Part Selection Box", Settings.Explorer.PartSelectionBox)
-    		partSelectionBox.OnInput:Connect(function()
-    			Settings.Explorer.PartSelectionBox = partSelectionBox.Toggled
+    		local partSelectionBoxState = Lib.State(Settings.Explorer.PartSelectionBox)
+    		partSelectionBoxState:onChange(function(val)
+    			Settings.Explorer.PartSelectionBox = val
     		end)
+    		local partSelectionBox = AddCheckbox("Part Selection Box", partSelectionBoxState)
     		
-    		local copypathUseChildren = AddCheckbox("Use GetChildren to Copy Path", Settings.Explorer.CopyPathUseGetChildren)
-    		copypathUseChildren.OnInput:Connect(function()
-    			Settings.Explorer.CopyPathUseGetChildren = copypathUseChildren.Toggled
+    		local copypathUseChildrenState = Lib.State(Settings.Explorer.CopyPathUseGetChildren)
+    		copypathUseChildrenState:onChange(function(val)
+    			Settings.Explorer.CopyPathUseGetChildren = val
     		end)
+    		local copypathUseChildren = AddCheckbox("Use GetChildren to Copy Path", copypathUseChildrenState)
     		
-    		local spoofAntiCheat = AddCheckbox("Anti-Cheat Spoofing (Stealth)", Settings.Explorer.AntiCheatSpoofing == true)
-    		spoofAntiCheat.OnInput:Connect(function()
-    			Settings.Explorer.AntiCheatSpoofing = spoofAntiCheat.Toggled
+    		local spoofAntiCheatState = Lib.State(Settings.Explorer.AntiCheatSpoofing == true)
+    		spoofAntiCheatState:onChange(function(val)
+    			Settings.Explorer.AntiCheatSpoofing = val
     		end)
+    		local spoofAntiCheat = AddCheckbox("Anti-Cheat Spoofing (Stealth)", spoofAntiCheatState)
     
     		AddSeperator("Viewport Interaction")
     
-    		local viewportMenuEnabled = AddCheckbox("Viewport Context Menu", Settings.Explorer.ViewportContextMenuEnabled)
-    		viewportMenuEnabled.OnInput:Connect(function()
-    			Settings.Explorer.ViewportContextMenuEnabled = viewportMenuEnabled.Toggled
+    		local viewportMenuEnabledState = Lib.State(Settings.Explorer.ViewportContextMenuEnabled)
+    		viewportMenuEnabledState:onChange(function(val)
+    			Settings.Explorer.ViewportContextMenuEnabled = val
     			if Explorer and Explorer.UpdateViewportListener then
     				Explorer.UpdateViewportListener()
     			end
     		end)
+    		local viewportMenuEnabled = AddCheckbox("Viewport Context Menu", viewportMenuEnabledState)
     
     		local viewportMenuTrigger = AddDropdown("Viewport Menu Trigger", {"Right Click", "Middle Click"}, Settings.Explorer.ViewportContextMenuTrigger, false, 100)
     		viewportMenuTrigger.OnSelect:Connect(function()
@@ -9330,7 +9614,7 @@ end,
     
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, ModelViewer, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, Notebook -- Major Apps
+    local Explorer, Properties, Notepad, ModelViewer, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -9359,8 +9643,7 @@ end,
     	ImageViewer = Apps.ImageViewer
     	SoundViewer = Apps.SoundViewer
     	AnimationViewer = Apps.AnimationViewer
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local Explorer = {}
@@ -9396,7 +9679,7 @@ end,
     
     	local iconData
     	local remote_blocklist = {} -- list of remotes beng blocked, k = the remote instance, v = their old function :3
-    	nodes = nodes or {}
+    	local nodes = {}
     
     	local function withExplorerAccess(fn,...)
     		local oldIdentity
@@ -9459,21 +9742,21 @@ end,
     
     		local isNil = false
     		local rootParObj = ffa(root,"Instance")
-    		local par = nodes[rootParObj]
+    		local parentNode = nodes[rootParObj]
     
     		-- Nil Handling
-    		if not par then
+    		if not parentNode then
     			if nilMap[root] then
     				nilCons[root] = nilCons[root] or {
     					connectSignal(root.ChildAdded,safeCallback(addObject)),
     					connectSignal(root.AncestryChanged,safeCallback(moveObject)),
     				}
-    				par = nilNode
+    				parentNode = nilNode
     				isNil = true
     			else
     				return
     			end
-    		elseif nilMap[rootParObj] or par == nilNode then
+    		elseif nilMap[rootParObj] or parentNode == nilNode then
     			nilMap[root] = true
     			nilCons[root] = nilCons[root] or {
     				connectSignal(root.ChildAdded,safeCallback(addObject)),
@@ -9482,12 +9765,12 @@ end,
     			isNil = true
     		end
     
-    		local newNode = {Obj = root, Parent = par}
+    		local newNode = {Obj = root, Parent = parentNode}
     		nodes[root] = newNode
     
     		-- Automatic sorting if expanded
-    		if sortingEnabled and expanded[par] and par.Sorted then
-    			local left,right = 1,#par
+    		if sortingEnabled and expanded[parentNode] and parentNode.Sorted then
+    			local left,right = 1,#parentNode
     			local floor = math.floor
     			local sorter = Explorer.NodeSorter
     			local pos = (right == 0 and 1)
@@ -9495,7 +9778,7 @@ end,
     			if not pos then
     				while true do
     					if left >= right then
-    						if sorter(newNode,par[left]) then
+    						if sorter(newNode,parentNode[left]) then
     							pos = left
     						else
     							pos = left+1
@@ -9504,7 +9787,7 @@ end,
     					end
     
     					local mid = floor((left+right)/2)
-    					if sorter(newNode,par[mid]) then
+    					if sorter(newNode,parentNode[mid]) then
     						right = mid-1
     					else
     						left = mid+1
@@ -9512,10 +9795,10 @@ end,
     				end
     			end
     
-    			table.insert(par,pos,newNode)
+    			table.insert(parentNode,pos,newNode)
     		else
-    			par[#par+1] = newNode
-    			par.Sorted = nil
+    			parentNode[#parentNode+1] = newNode
+    			parentNode.Sorted = nil
     		end
     
     		local insts = getDescendants(root)
@@ -9523,11 +9806,11 @@ end,
     			local obj = insts[i]
     			if nodes[obj] then continue end -- Deferred
     
-    			local par = nodes[ffa(obj,"Instance")]
-    			if not par then continue end
-    			local newNode = {Obj = obj, Parent = par}
+    			local descendantParent = nodes[ffa(obj,"Instance")]
+    			if not descendantParent then continue end
+    			local newNode = {Obj = obj, Parent = descendantParent}
     			nodes[obj] = newNode
-    			par[#par+1] = newNode
+    			descendantParent[#descendantParent+1] = newNode
     
     			-- Nil Handling
     			if isNil then
@@ -10364,6 +10647,12 @@ end,
     		if descendantAddedCon then descendantAddedCon:Disconnect() descendantAddedCon = nil end
     		if descendantRemovingCon then descendantRemovingCon:Disconnect() descendantRemovingCon = nil end
     		if itemChangedCon then itemChangedCon:Disconnect() itemChangedCon = nil end
+    		if delCleanerThread then
+    			if coroutine.status(delCleanerThread) == "suspended" or coroutine.status(delCleanerThread) == "running" then
+    				coroutine.close(delCleanerThread)
+    			end
+    			delCleanerThread = nil
+    		end
     	end
     
     	Explorer.ViewNode = function(node)
@@ -10630,22 +10919,18 @@ end,
     		if presentClasses["ClickDetector"] then context:AddRegistered("FIRE_CLICKDETECTOR", fireclickdetector == nil) end
     		if presentClasses["ProximityPrompt"] then context:AddRegistered("FIRE_PROXIMITYPROMPT", fireproximityprompt == nil) end
     
-    
-    		if presentClasses["RemoteEvent"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-    		if presentClasses["RemoteEvent"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-    
-    		if presentClasses["RemoteFunction"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-    		if presentClasses["RemoteFunction"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-    
-    		if presentClasses["UnreliableRemoteEvent"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-    		if presentClasses["UnreliableRemoteEvent"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-    
-    
-    		if presentClasses["BindableEvent"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-    		if presentClasses["BindableEvent"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
-    
-    		if presentClasses["BindableFunction"] then context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil) end
-    		if presentClasses["BindableFunction"] then context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil) end
+    		local blockableClasses = {"RemoteEvent", "RemoteFunction", "UnreliableRemoteEvent", "BindableEvent", "BindableFunction"}
+    		local hasBlockable = false
+    		for _, className in ipairs(blockableClasses) do
+    			if presentClasses[className] then
+    				hasBlockable = true
+    				break
+    			end
+    		end
+    		if hasBlockable then
+    			context:AddRegistered("BLOCK_REMOTE", env.hookfunction == nil)
+    			context:AddRegistered("UNBLOCK_REMOTE", env.hookfunction == nil)
+    		end
     
     		if presentClasses["RemoteEvent"] or presentClasses["RemoteFunction"] or presentClasses["UnreliableRemoteEvent"] or presentClasses["BindableEvent"] or presentClasses["BindableFunction"] then
     			context:AddRegistered("VIEW_REMOTE_USAGE", #sList ~= 1 or not RemoteUsageMap)
@@ -11461,8 +11746,10 @@ end,
     		Explorer.ClickSystem = sys
     	end
     
+    	local delCleanerThread = nil
+    
     	Explorer.InitDelCleaner = function()
-    		coroutine.wrap(function()
+    		delCleanerThread = coroutine.create(function()
     			local fw = Lib.FastWait
     			while true do
     				local processed = false
@@ -11501,7 +11788,8 @@ end,
     				if processed and not refreshDebounce then scheduleExplorerPaint(false) end
     				fw(0.5)
     			end
-    		end)()
+    		end)
+    		coroutine.resume(delCleanerThread)
     	end
     
     	Explorer.UpdateSelectionVisuals = function()
@@ -13044,7 +13332,7 @@ end,
     
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, Notebook -- Major Apps
+    local Explorer, Properties, Notepad -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -13066,8 +13354,7 @@ end,
     	Explorer = Apps.Explorer
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local Properties = {}
@@ -14900,7 +15187,7 @@ end,
     		Properties.FullNameFrameAttach = Lib.AttachTo(fullNameFrame)
     	end
     
-    	Properties.Init = function() -- TODO: MAKE BETTER
+    	Properties.CreateToolbar = function()
     		local guiItems = create({
     			{1,"Folder",{Name="Items",}},
     			{2,"Frame",{BackgroundColor3=Color3.new(0.20392157137394,0.20392157137394,0.20392157137394),BorderSizePixel=0,Name="ToolBar",Parent={1},Size=UDim2.new(1,0,0,22),}},
@@ -14914,30 +15201,10 @@ end,
     			{10,"Frame",{BackgroundColor3=Color3.new(0.15686275064945,0.15686275064945,0.15686275064945),BorderSizePixel=0,Name="ScrollCorner",Parent={1},Position=UDim2.new(1,-16,1,-16),Size=UDim2.new(0,16,0,16),Visible=false,}},
     			{11,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,ClipsDescendants=true,Name="List",Parent={1},Position=UDim2.new(0,0,0,23),Size=UDim2.new(1,0,1,-23),}},
     		})
+    		return guiItems
+    	end
     
-    		-- Vars
-    		categoryOrder =  API.CategoryOrder
-    		for category,_ in next,categoryOrder do
-    			if not Properties.CollapsedCategories[category] then
-    				expanded["CAT_"..category] = true
-    			end
-    		end
-    		expanded["Sound.SoundId"] = true
-    
-    		-- Init window
-    		window = Lib.Window.new()
-    		Properties.Window = window
-    		window:SetTitle("Properties")
-    
-    		toolBar = guiItems.ToolBar
-    		propsFrame = guiItems.List
-    
-    		Properties.GuiElems.ToolBar = toolBar
-    		Properties.GuiElems.PropsFrame = propsFrame
-    
-    		Properties.InitEntryStuff()
-    
-    		-- Window events
+    	Properties.SetupWindowEvents = function()
     		window.GuiElems.Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
     			if Properties.Window:IsContentVisible() then
     				Properties.UpdateView()
@@ -14954,9 +15221,10 @@ end,
     			Properties.Update()
     			Properties.Refresh()
     		end)
+    	end
     
-    		-- Init scrollbars
-    		scrollV = Lib.ScrollBar.new()		
+    	Properties.SetupScrollbars = function()
+    		scrollV = Lib.ScrollBar.new()
     		scrollV.WheelIncrement = 3
     		scrollV.Gui.Position = UDim2.new(1,-16,0,23)
     		scrollV:SetScrollFrame(propsFrame)
@@ -14972,8 +15240,9 @@ end,
     		scrollH.Scrolled:Connect(function()
     			requestRefresh()
     		end)
+    	end
     
-    		-- Setup Gui
+    	Properties.SetupGuiLayout = function()
     		window.GuiElems.Line.Position = UDim2.new(0,0,0,22)
     		toolBar.Parent = window.GuiElems.Content
     		propsFrame.Parent = window.GuiElems.Content
@@ -14982,6 +15251,36 @@ end,
     		scrollH.Gui.Parent = window.GuiElems.Content
     		Properties.InitInputBox()
     		Properties.InitSearch()
+    	end
+    
+    	Properties.Init = function()
+    		-- Initialize category expansion state
+    		categoryOrder = API.CategoryOrder
+    		for category,_ in next,categoryOrder do
+    			if not Properties.CollapsedCategories[category] then
+    				expanded["CAT_"..category] = true
+    			end
+    		end
+    		expanded["Sound.SoundId"] = true
+    
+    		-- Create GUI elements
+    		local guiItems = Properties.CreateToolbar()
+    
+    		-- Initialize window
+    		window = Lib.Window.new()
+    		Properties.Window = window
+    		window:SetTitle("Properties")
+    
+    		toolBar = guiItems.ToolBar
+    		propsFrame = guiItems.List
+    
+    		Properties.GuiElems.ToolBar = toolBar
+    		Properties.GuiElems.PropsFrame = propsFrame
+    
+    		Properties.InitEntryStuff()
+    		Properties.SetupWindowEvents()
+    		Properties.SetupScrollbars()
+    		Properties.SetupGuiLayout()
     	end
     
     	return Properties
@@ -15003,7 +15302,7 @@ end,
     
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, SaveInstance, Notebook -- Major Apps
+    local Explorer, Properties, Notepad, SaveInstance -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -15026,8 +15325,7 @@ end,
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
     	SaveInstance = Apps.SaveInstance
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local SaveInstance = {}
@@ -15303,7 +15601,7 @@ end,
     	Fast reference inspector for any selected Instance.
     ]]
     local Main,Lib,Apps,Settings
-    local Explorer, Notepad, ObjectLinks, RemoteUsageMap, Notebook
+    local Explorer, Notepad, ObjectLinks, RemoteUsageMap
     local API,RMD,env,service,plr,create,createSimple
     
     local function initDeps(data)
@@ -15325,8 +15623,7 @@ end,
     	Notepad = Apps.Notepad
     	ObjectLinks = Apps.ObjectLinks
     	RemoteUsageMap = Apps.RemoteUsageMap
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local ObjectLinks = {}
@@ -16908,7 +17205,7 @@ end,
     
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, ModelViewer, Notebook -- Major Apps
+    local Explorer, Properties, Notepad, ModelViewer -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -16930,8 +17227,7 @@ end,
     	Explorer = Apps.Explorer
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function getPath(obj)
         if Main and Main.SafeGetInstancePath then
@@ -17316,7 +17612,7 @@ end,
     	Previews image-like asset properties from selected instances.
     ]]
     local Main,Lib,Apps,Settings
-    local Explorer, ImageViewer, Notebook
+    local Explorer, ImageViewer
     local API,RMD,env,service,plr,create,createSimple
     
     local function initDeps(data)
@@ -17328,8 +17624,7 @@ end,
     local function initAfterMain()
     	Explorer = Apps.Explorer
     	ImageViewer = Apps.ImageViewer
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local ImageViewer = {}
@@ -18509,7 +18804,7 @@ end,
     
     -- Common Locals
     local Main, Lib, Apps, Settings -- Main Containers
-    local Explorer, Properties, Notepad, Notebook -- Major Apps
+    local Explorer, Properties, Notepad -- Major Apps
     local API, RMD, env, service, plr, create, createSimple -- Main Locals
     
     local function initDeps(data)
@@ -18531,7 +18826,6 @@ end,
     	Explorer = t.Explorer
     	Properties = t.Properties
     	Notepad = t.Notepad
-    	Notebook = t.Notebook
     end
     
     local function main()
@@ -18752,7 +19046,7 @@ end,
     ]]
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, Notebook, SmartDecompiler -- Major Apps
+    local Explorer, Properties, Notepad, SmartDecompiler -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -18770,12 +19064,11 @@ end,
     	createSimple = data.createSimple
     end
     
-    local function initAfterMain(t)
-    	Explorer = t.Explorer
-    	Properties = t.Properties
-    	Notepad = t.Notepad
-    	Notebook = t.Notebook
-    	SmartDecompiler = t.SmartDecompiler
+    local function initAfterMain()
+    	Explorer = Apps.Explorer
+    	Properties = Apps.Properties
+    	Notepad = Apps.Notepad
+    	SmartDecompiler = Apps.SmartDecompiler
     end
     
     local executorName = "Unknown"
@@ -18790,15 +19083,7 @@ end,
     end
     
     local function getPath(obj)
-        if Main and Main.SafeGetInstancePath then
-            return Main.SafeGetInstancePath(obj)
-        end
-        if not obj then return "?" end
-        if obj.Parent == nil then return "Nil parented" end
-        local ok, fullName = pcall(function()
-            return obj:GetFullName()
-        end)
-        return ok and fullName or tostring(obj)
+        return Lib.getSafePath(obj)
     end
     
     local function main()
@@ -21073,7 +21358,7 @@ end,
     
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, CodeSearch, Notebook -- Major Apps
+    local Explorer, Properties, Notepad, CodeSearch -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     
     local function initDeps(data)
@@ -21096,13 +21381,45 @@ end,
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
     	CodeSearch = Apps.CodeSearch
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local CodeSearch = {}
     	local window, searchBox, statusLabel, resultsFrame, sidePanel, sideTitle, sidePath, sideMeta, sidePreview, sideBadges, lowImpactButton, allFilterButton, resultContextMenu
     	local indexing = false
+    	local antiAfkConnection = nil
+    
+    	local function startAntiAfk()
+    		if antiAfkConnection then return end
+    		local Players = game:GetService("Players")
+    		local VirtualUser = game:GetService("VirtualUser")
+    		local localPlayer = Players.LocalPlayer
+    		if localPlayer then
+    			antiAfkConnection = localPlayer.Idled:Connect(function()
+    				pcall(function()
+    					VirtualUser:CaptureController()
+    					VirtualUser:ClickButton2(Vector2.new(0, 0))
+    				end)
+    			end)
+    		end
+    	end
+    
+    	local function stopAntiAfk()
+    		if antiAfkConnection then
+    			antiAfkConnection:Disconnect()
+    			antiAfkConnection = nil
+    		end
+    	end
+    
+    	local function setIndexing(state)
+    		indexing = state
+    		if state then
+    			startAntiAfk()
+    		else
+    			stopAntiAfk()
+    		end
+    	end
+    
     	local searching = false
     	local smartMode = false
     	local cancelRequested = false
@@ -22152,7 +22469,7 @@ end,
     			return
     		end
     
-    		indexing = true
+    		setIndexing(true)
     		local token = beginOperation()
     		reportTool({
     			State = "indexing",
@@ -22172,7 +22489,7 @@ end,
     			local lowImpact = isLowImpactIndex()
     
     			if total == 0 then
-    				indexing = false
+    				setIndexing(false)
     				setStatus("No decompilable scripts found.")
     				reportTool({State = "idle", Load = "low", Progress = 1, Total = 0})
     				return
@@ -22180,7 +22497,7 @@ end,
     
     			for i, scriptInstance in ipairs(scripts) do
     				if not indexing or shouldCancel(token) then
-    					indexing = false
+    					setIndexing(false)
     					setStatus(("Index stopped: %d cached, %d decompiled, %d failed, %d helper."):format(cached, decompiled, failed, helperIndexed))
     					reportTool({
     						State = "stopped",
@@ -22292,7 +22609,7 @@ end,
     				task.wait(0.08)
     			end
     
-    			indexing = false
+    			setIndexing(false)
     			if shouldCancel(token) then
     				setStatus(("Index stopped: %d cached, %d decompiled, %d failed, %d helper."):format(cached, decompiled, failed, helperIndexed))
     				reportTool({
@@ -22341,7 +22658,7 @@ end,
     		end
     		cancelRequested = true
     		operationId += 1
-    		indexing = false
+    		setIndexing(false)
     		searching = false
     		setStatus("Stopping current Code Search task...")
     		reportTool({State = "stopping", Load = "low"})
@@ -23352,7 +23669,7 @@ end,
     ]]
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, ScriptRelations, Notebook, DependencyGraph -- Major Apps
+    local Explorer, Properties, Notepad, ScriptRelations, DependencyGraph -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     local function initDeps(data)
     	Main = data.Main
@@ -23372,8 +23689,7 @@ end,
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
     	ScriptRelations = Apps.ScriptRelations
-    	Notebook = Apps.Notebook
-    	DependencyGraph = Apps.DependencyGraph
+    		DependencyGraph = Apps.DependencyGraph
     end
     local function main()
     	local ScriptRelations = {}
@@ -24267,7 +24583,7 @@ end,
     	Correlates Remote calls with RakNet outbound packet activity.
     ]]
     local Main,Lib,Apps,Settings
-    local Explorer, Properties, Notepad, RuntimeInspector, RemoteUsageMap, Notebook
+    local Explorer, Properties, Notepad, RuntimeInspector, RemoteUsageMap
     local API,RMD,env,service,plr,create,createSimple
     local function initDeps(data)
     	Main = data.Main
@@ -24288,8 +24604,7 @@ end,
     	Notepad = Apps.Notepad
     	RuntimeInspector = Apps.RuntimeInspector
     	RemoteUsageMap = Apps.RemoteUsageMap
-    	Notebook = Apps.Notebook
-    end
+    	end
     local function main()
     	local RuntimeInspector = {}
     	local window, listFrame, statusLabel
@@ -24315,12 +24630,7 @@ end,
     		end
     	end
     	local function getPath(obj)
-            if Main and Main.SafeGetInstancePath then return Main.SafeGetInstancePath(obj) end
-    		local success, path = pcall(function()
-    			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(obj) end
-    			return obj:GetFullName()
-    		end)
-    		return success and tostring(path) or tostring(obj)
+    		return Lib.getSafePath(obj)
     	end
     	local function summarizeValue(value, depth)
     		depth = depth or 0
@@ -24582,7 +24892,7 @@ end,
     ]]
     -- Common Locals
     local Main,Lib,Apps,Settings -- Main Containers
-    local Explorer, Properties, Notepad, RemoteUsageMap, Notebook -- Major Apps
+    local Explorer, Properties, Notepad, RemoteUsageMap -- Major Apps
     local API,RMD,env,service,plr,create,createSimple -- Main Locals
     local function initDeps(data)
     	Main = data.Main
@@ -24602,8 +24912,7 @@ end,
     	Properties = Apps.Properties
     	Notepad = Apps.Notepad
     	RemoteUsageMap = Apps.RemoteUsageMap
-    	Notebook = Apps.Notebook
-    end
+    	end
     local function main()
     	local RemoteUsageMap = {}
     	local window, statusLabel, listFrame
@@ -24629,12 +24938,7 @@ end,
     		return typeof(obj) == "Instance" and remoteClasses[obj.ClassName] == true
     	end
     	local function getPath(obj)
-            if Main and Main.SafeGetInstancePath then return Main.SafeGetInstancePath(obj) end
-    		local success, path = pcall(function()
-    			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(obj) end
-    			return obj:GetFullName()
-    		end)
-    		return success and tostring(path) or tostring(obj)
+    		return Lib.getSafePath(obj)
     	end
     	local function clearRows()
     		if not listFrame then return end
@@ -24849,7 +25153,7 @@ end,
     	Shows recent live instance churn and RuntimeInspector remote activity.
     ]]
     local Main,Lib,Apps,Settings
-    local Explorer, RuntimeInspector, ActivityMap, Notebook
+    local Explorer, RuntimeInspector, ActivityMap
     local API,RMD,env,service,plr,create,createSimple
     
     local function initDeps(data)
@@ -24862,8 +25166,7 @@ end,
     	Explorer = Apps.Explorer
     	RuntimeInspector = Apps.RuntimeInspector
     	ActivityMap = Apps.ActivityMap
-    	Notebook = Apps.Notebook
-    end
+    	end
     
     local function main()
     	local ActivityMap = {}
@@ -24874,12 +25177,7 @@ end,
     	local maxEvents = 160
     
     	local function getPath(obj)
-            if Main and Main.SafeGetInstancePath then return Main.SafeGetInstancePath(obj) end
-    		local ok, path = pcall(function()
-    			if Explorer and Explorer.GetInstancePath then return Explorer.GetInstancePath(obj) end
-    			return obj:GetFullName()
-    		end)
-    		return ok and tostring(path) or tostring(obj)
+    		return Lib.getSafePath(obj)
     	end
     	local function clearRows()
     		for _, child in pairs(listFrame:GetChildren()) do
@@ -26944,7 +27242,7 @@ end,
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename, History--[[, SecretServicePanel]], DefaultSettings, Notebook, Serializer, Lib local ggv = getgenv or nil
+local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename, History, DefaultSettings, Lib, State local ggv = getgenv or nil
 local API, RMD
 
 -- Default Settings
@@ -27409,9 +27707,11 @@ Main = (function()
 		end
 	end
 
-	Main.ModuleList = {"Theme","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
+	Main.ModuleList = {"Theme","State","IconData","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
 	Main.ModulePathMap = {
 		Theme = "Core/Theme",
+		State = "Core/State",
+		IconData = "Core/IconData",
 		Lib = "Core/Lib",
 		Console = "Core/Console",
 		SettingsWindow = "Core/SettingsWindow",
@@ -27848,7 +28148,7 @@ Main = (function()
 	end
 
 	Main.LoadModules = function()
-		for i,v in pairs(Main.ModuleList) do
+		for i,v in ipairs(Main.ModuleList) do
 			local s,e = pcall(Main.LoadModule,v)
 			if not s then
 				Main.Error("FAILED LOADING " .. v .. " CAUSE " .. e)
@@ -27862,7 +28162,7 @@ Main = (function()
 		Console = Apps.Console
 		SaveInstance = Apps.SaveInstance
 		ModelViewer = Apps.ModelViewer
-		Notebook = Apps.Notebook
+
 		SettingsWindow = Apps.SettingsWindow
 		CodeSearch = Apps.CodeSearch
 		ScriptRelations = Apps.ScriptRelations
@@ -27895,11 +28195,13 @@ Main = (function()
 		PropertyRestorer = Apps.PropertyRestorer
 		Rename = Apps.Rename
 		History = Apps.History
+		State = Apps.State
 
 
-		--SecretServicePanel = Apps.SecretServicePanel
+
 		local appTable = {
 			Theme = Theme,
+			State = State,
 			SmartDecompiler = SmartDecompiler,
 			Explorer = Explorer,
 			Properties = Properties,
@@ -27907,7 +28209,7 @@ Main = (function()
 			Console = Console,
 			SaveInstance = SaveInstance,
 			ModelViewer = ModelViewer,
-			Notebook = Notebook,
+
 			SettingsWindow = SettingsWindow,
 			CodeSearch = CodeSearch,
 			ScriptRelations = ScriptRelations,
@@ -27941,7 +28243,7 @@ Main = (function()
 		}
 
 		Main.AppControls.Lib.InitAfterMain(appTable)
-		for i,v in pairs(Main.ModuleList) do
+		for i,v in ipairs(Main.ModuleList) do
 			local control = Main.AppControls[v]
 			if control then
 				control.InitAfterMain(appTable)
@@ -28596,7 +28898,9 @@ Main = (function()
 			local cache = {}
 			local HttpService = service.HttpService
 			local rootDir = "dex/DecompileCache"
-			local placeDir = rootDir .. "/" .. tostring(game.PlaceId)
+			local gameIdStr = (game.GameId and game.GameId ~= 0) and tostring(game.GameId) or "UnknownGame"
+			local sharedSourcesDir = rootDir .. "/" .. gameIdStr .. "/shared_sources"
+			local placeDir = rootDir .. "/" .. gameIdStr .. "/" .. tostring(game.PlaceId)
 			local metadataPath = placeDir .. "/metadata.json"
 			local metadataLoaded = false
 			local metadata = {PlaceId = tostring(game.PlaceId), Scripts = {}}
@@ -28615,6 +28919,8 @@ Main = (function()
 				if not isReady() then return false end
 				ensureFolder("dex")
 				ensureFolder(rootDir)
+				ensureFolder(rootDir .. "/" .. gameIdStr)
+				ensureFolder(sharedSourcesDir)
 				ensureFolder(placeDir)
 				return true
 			end
@@ -28713,8 +29019,17 @@ Main = (function()
 				if not info then return false end
 
 				local entry = metadata.Scripts[info.Key]
-				if not entry then return false end
-				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then return false end
+				if not entry then
+					if info.Hash then
+						local sharedPath = sharedSourcesDir .. "/" .. info.Hash .. ".lua"
+						return env.isfile(sharedPath)
+					end
+					return false
+				end
+				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then
+					local sharedPath = sharedSourcesDir .. "/" .. info.Hash .. ".lua"
+					return env.isfile(sharedPath)
+				end
 
 				local path = placeDir .. "/" .. tostring(entry.File or info.File)
 				return env.isfile(path)
@@ -28740,16 +29055,52 @@ Main = (function()
 				if not info then return nil, "Script cache info is unavailable." end
 
 				local entry = metadata.Scripts[info.Key]
-				if not entry then return nil, "No cached source." end
-				if info.Hash and entry.Hash and entry.Hash ~= info.Hash then return nil, "Cached source is stale." end
+				local sharedPath = info.Hash and (sharedSourcesDir .. "/" .. info.Hash .. ".lua") or nil
 
-				local path = placeDir .. "/" .. tostring(entry.File or info.File)
-				if not env.isfile(path) then return nil, "Cached source file is missing." end
-
-				local success, source = pcall(env.readfile, path)
-				if success and isCacheableSource(source) then
-					return source, entry
+				if entry then
+					if info.Hash and entry.Hash and entry.Hash ~= info.Hash then
+						if sharedPath and env.isfile(sharedPath) then
+							local success, source = pcall(env.readfile, sharedPath)
+							if success and isCacheableSource(source) then
+								metadata.Scripts[info.Key] = {
+									Hash = info.Hash,
+									File = "../shared_sources/" .. info.Hash .. ".lua",
+									Path = info.Path,
+									Name = info.Name,
+									ClassName = info.ClassName,
+									UpdatedAt = os.time()
+								}
+								saveMetadata()
+								return source, metadata.Scripts[info.Key]
+							end
+						end
+					else
+						local path = placeDir .. "/" .. tostring(entry.File or info.File)
+						if env.isfile(path) then
+							local success, source = pcall(env.readfile, path)
+							if success and isCacheableSource(source) then
+								return source, entry
+							end
+						end
+					end
 				end
+
+				if sharedPath and env.isfile(sharedPath) then
+					local success, source = pcall(env.readfile, sharedPath)
+					if success and isCacheableSource(source) then
+						metadata.Scripts[info.Key] = {
+							Hash = info.Hash,
+							File = "../shared_sources/" .. info.Hash .. ".lua",
+							Path = info.Path,
+							Name = info.Name,
+							ClassName = info.ClassName,
+							UpdatedAt = os.time()
+						}
+						saveMetadata()
+						return source, metadata.Scripts[info.Key]
+					end
+				end
+
 				return nil, "Cached source is empty or contains a decompiler failure."
 			end
 			cache.Write = function(script_instance, source)
@@ -28759,14 +29110,23 @@ Main = (function()
 				local info = getInfo(script_instance)
 				if not info then return false end
 
-				local path = placeDir .. "/" .. info.File
-				local writeSuccess = pcall(env.writefile, path, source)
-				if not writeSuccess then return false end
+				local fileRef
+				if info.Hash then
+					local path = sharedSourcesDir .. "/" .. info.Hash .. ".lua"
+					local writeSuccess = pcall(env.writefile, path, source)
+					if not writeSuccess then return false end
+					fileRef = "../shared_sources/" .. info.Hash .. ".lua"
+				else
+					local path = placeDir .. "/" .. info.File
+					local writeSuccess = pcall(env.writefile, path, source)
+					if not writeSuccess then return false end
+					fileRef = info.File
+				end
 
 				loadMetadata()
 				metadata.Scripts[info.Key] = {
 					Hash = info.Hash,
-					File = info.File,
+					File = fileRef,
 					Path = info.Path,
 					Name = info.Name,
 					ClassName = info.ClassName,
@@ -30427,7 +30787,10 @@ Main = (function()
 		safeMakeFolder("dex/plugins")
 		safeMakeFolder("dex/ModuleCache")
 		safeMakeFolder("dex/DecompileCache")
-		safeMakeFolder("dex/DecompileCache/" .. tostring(game.PlaceId))
+		local gameIdStr = (game.GameId and game.GameId ~= 0) and tostring(game.GameId) or "UnknownGame"
+		safeMakeFolder("dex/DecompileCache/" .. gameIdStr)
+		safeMakeFolder("dex/DecompileCache/" .. gameIdStr .. "/shared_sources")
+		safeMakeFolder("dex/DecompileCache/" .. gameIdStr .. "/" .. tostring(game.PlaceId))
 	end
 
 	Main.SaveCurrentSettings = function()
@@ -30455,6 +30818,7 @@ Main = (function()
 
 		-- Load Lib
 		local intro = Main.CreateIntro("Initializing Library")
+		Main.LoadModule("IconData")
 		Lib = Main.LoadModule("Lib")
 		Lib.FastWait()
 

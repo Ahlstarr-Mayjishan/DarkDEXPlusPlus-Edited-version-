@@ -1,0 +1,34 @@
+---
+alwaysApply: true
+---
+
+---
+description: Output style - concise, direct, structured only when useful
+alwaysApply: true
+---
+
+# Output Format
+
+## Communication Style
+- Be concise, direct, and grounded.
+- Skip non-essential context unless the task is open-ended or the user asks for detail.
+- Prefer fact-based progress updates over self-congratulatory summaries.
+
+## Formatting Control
+- Tell Claude what to do, not only what to avoid.
+- Write clear, flowing prose by default.
+- Use markdown only when it improves readability.
+- Use lists only for truly discrete items or when the user explicitly wants a list.
+
+## Avoid Preambles
+- Respond directly without filler like "Here is...", "Based on...", or similar setup phrases unless context makes them useful.
+
+## Match Output to Request
+- Simple question -> direct answer.
+- Coding task -> concise explanation plus implementation.
+- Research or analysis -> structured answer with enough context to be useful.
+
+## Verbosity
+- Calibrate length to task complexity.
+- Keep simple answers short.
+- Be more thorough only for complex, ambiguous, or high-stakes tasks.

@@ -1,7 +1,16 @@
 #include "Index.h"
+#include <shlobj.h>
 
 const char* INDEX_FILE_PATH = "dex_helper_index.dat";
 const char* INDEX_MAGIC = "DEXPP_INDEX_V1";
+
+std::string get_db_path() {
+    char path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) {
+        return std::string(path) + "\\DEX++Helper\\dex_helper.db";
+    }
+    return "dex_helper.db";
+}
 
 std::unordered_map<std::string, IndexedScript> g_script_index;
 std::mutex g_script_index_mutex;
@@ -1008,7 +1017,11 @@ sqlite3* g_db = nullptr;
 
 bool init_db() {
     if (g_db) return true;
-    int rc = sqlite3_open("dex_helper.db", &g_db);
+
+    std::string db_path = get_db_path();
+    create_directories_for_file(to_wstring(db_path));
+
+    int rc = sqlite3_open(db_path.c_str(), &g_db);
     if (rc != SQLITE_OK) {
         std::cerr << "Cannot open database: " << sqlite3_errmsg(g_db) << std::endl;
         return false;
@@ -1061,7 +1074,7 @@ std::string save_index_response() {
     std::lock_guard<std::mutex> lock(g_script_index_mutex);
     std::stringstream json;
     json << "{\"ok\":true,\"scripts\":" << g_script_index.size()
-         << ",\"file\":\"dex_helper.db\"}";
+         << ",\"file\":\"" << get_db_path() << "\"}";
     return json.str();
 }
 
@@ -1114,6 +1127,6 @@ std::string load_index_response() {
     }
     
     std::stringstream json;
-    json << "{\"ok\":true,\"scripts\":" << count << ",\"file\":\"dex_helper.db\"}";
+    json << "{\"ok\":true,\"scripts\":" << count << ",\"file\":\"" << get_db_path() << "\"}";
     return json.str();
 }

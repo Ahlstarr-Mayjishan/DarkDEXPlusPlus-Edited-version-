@@ -8,6 +8,7 @@ Only the source files are grouped to make ownership easier to understand.
 Shared UI, shell, settings, task control, and safety controls.
 
 - `Theme`
+- `State`
 - `Lib`
 - `Console`
 - `SettingsWindow`
@@ -24,8 +25,27 @@ Instance browsing, object inspection, previews, serialization, and save/export t
 - `SaveInstance`
 - `ModelViewer`
 - `ImageViewer`
+- `SoundViewer`
+- `AnimationViewer`
 - `ObjectLinks`
 - `InstanceSerializer`
+- `Clipboard`
+- `Duplicate`
+- `Deletion`
+- `PropertyCopier`
+- `PropertyRestorer`
+- `Rename`
+- `History`
+
+### Explorer Context Menus
+
+- `EditMenu`
+- `NavigationMenu`
+- `ObjectMenu`
+- `ScriptMenu`
+- `InteractionMenu`
+- `PlayerMenu`
+- `NilInstanceMenu`
 
 ## Search
 
@@ -52,3 +72,8 @@ Live client observation, remote/runtime activity, property tracking, and runtime
 - `ClientIntelligence`
 - `InspectorHub`
 
+## Tools
+
+IDE integration and external tooling bridges.
+
+- `IDESync`

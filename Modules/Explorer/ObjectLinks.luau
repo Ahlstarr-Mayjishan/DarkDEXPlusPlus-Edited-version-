@@ -4,7 +4,7 @@
 	Fast reference inspector for any selected Instance.
 ]]
 local Main,Lib,Apps,Settings
-local Explorer, Notepad, ObjectLinks, RemoteUsageMap, Notebook
+local Explorer, Notepad, ObjectLinks, RemoteUsageMap
 local API,RMD,env,service,plr,create,createSimple
 
 local function initDeps(data)
@@ -26,8 +26,7 @@ local function initAfterMain()
 	Notepad = Apps.Notepad
 	ObjectLinks = Apps.ObjectLinks
 	RemoteUsageMap = Apps.RemoteUsageMap
-	Notebook = Apps.Notebook
-end
+	end
 
 local function main()
 	local ObjectLinks = {}
