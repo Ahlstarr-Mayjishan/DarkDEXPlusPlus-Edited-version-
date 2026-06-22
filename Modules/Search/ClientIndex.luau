@@ -22,6 +22,56 @@ end
 local function main()
 	local ClientIndex = {}
 	local remoteClasses = {RemoteEvent=true, RemoteFunction=true, UnreliableRemoteEvent=true, BindableEvent=true, BindableFunction=true}
+
+	local function parseSearchQuery(rawQuery: string): (string, string)
+		local query = rawQuery:match("^%s*(.-)%s*$") or rawQuery
+		local reMatch = query:match("^re:\"(.-)\"$") or query:match("^re:(.+)$")
+		if reMatch then
+			return "regex", reMatch
+		end
+		local fuzzyMatchPattern = query:match("^fuzzy:\"(.-)\"$") or query:match("^fuzzy:(.+)$")
+		if fuzzyMatchPattern then
+			return "fuzzy", fuzzyMatchPattern
+		end
+		return "normal", query
+	end
+
+	local function fuzzyMatch(str: string, pattern: string): (boolean, number)
+		str = str:lower()
+		pattern = pattern:lower()
+		if pattern == "" then return true, 0 end
+		if str == pattern then return true, 100 end
+
+		local patternLen = #pattern
+		local strLen = #str
+		if patternLen > strLen then return false, 0 end
+
+		local patternIdx = 1
+		local score = 0
+		local consecutive = 0
+		local lastMatchIdx = 0
+
+		for i = 1, strLen do
+			local c = str:sub(i, i)
+			local pc = pattern:sub(patternIdx, patternIdx)
+			if c == pc then
+				patternIdx = patternIdx + 1
+				local distance = i - lastMatchIdx
+				if distance == 1 then
+					consecutive = consecutive + 1
+					score = score + 10 + (consecutive * 5)
+				else
+					consecutive = 0
+					score = score + 10 - distance
+				end
+				lastMatchIdx = i
+				if patternIdx > patternLen then
+					return true, score
+				end
+			end
+		end
+		return false, 0
+	end
 	local surfaceTtl = 4
 	local surfaceStamp = 0
 	local surface = {AllInstances={}, AllScripts={}, ViableScripts={}, Remotes={}}
@@ -162,6 +212,7 @@ local function main()
 		end
 		local entries, cacheDir = ClientIndex.GetCacheEntries()
 		local count = 0
+		local mode, pattern = parseSearchQuery(query)
 		for key, entry in pairs(entries) do
 			if keepGoing and not keepGoing() then return rows end
 			if entry.File then
@@ -170,9 +221,40 @@ local function main()
 					local ok, source = pcall(env.readfile, path)
 					if ok and type(source) == "string" then
 						local lowerPath, lowerSource = tostring(entry.Path or ""):lower(), source:lower()
-						local hitAt = lowerSource:find(lowerQuery, 1, true)
-						if hitAt or lowerPath:find(lowerQuery, 1, true) then
-							rows[#rows + 1] = {Key=key, Entry=entry, Snippet=source:sub(math.max(1, (hitAt or 1) - 45), math.min(#source, (hitAt or 1) + 120)):gsub("\r"," "):gsub("\n"," ")}
+						local hitAt = nil
+						if mode == "regex" then
+							local okPat, startPos = pcall(string.find, lowerSource, pattern:lower())
+							if okPat and startPos then
+								hitAt = startPos
+							else
+								local okPath, pathPos = pcall(string.find, lowerPath, pattern:lower())
+								if okPath and pathPos then
+									hitAt = 1
+								end
+							end
+						elseif mode == "fuzzy" then
+							local pathOk, _ = fuzzyMatch(lowerPath, pattern)
+							local sourceOk, _ = false, 0
+							if #source < 50000 then
+								sourceOk, _ = fuzzyMatch(lowerSource, pattern)
+							end
+							if pathOk or sourceOk then
+								if sourceOk then
+									local firstChar = pattern:sub(1,1):lower()
+									hitAt = lowerSource:find(firstChar, 1, true) or 1
+								else
+									hitAt = 1
+								end
+							end
+						else
+							local normalHit = lowerSource:find(lowerQuery, 1, true)
+							if normalHit or lowerPath:find(lowerQuery, 1, true) then
+								hitAt = normalHit or 1
+							end
+						end
+
+						if hitAt then
+							rows[#rows + 1] = {Key=key, Entry=entry, Snippet=source:sub(math.max(1, hitAt - 45), math.min(#source, hitAt + 120)):gsub("\r"," "):gsub("\n"," ")}
 							if limit and #rows >= limit then return rows end
 						end
 					end

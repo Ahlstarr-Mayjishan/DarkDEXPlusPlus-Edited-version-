@@ -86,6 +86,57 @@ local function main()
 	local reviewedKeys = {}
 	local indexedKeys = {}
 	local helperIndexedKeys = {}
+
+	local function parseSearchQuery(rawQuery: string): (string, string)
+		local query = rawQuery:match("^%s*(.-)%s*$") or rawQuery
+		local reMatch = query:match("^re:\"(.-)\"$") or query:match("^re:(.+)$")
+		if reMatch then
+			return "regex", reMatch
+		end
+		local fuzzyMatchPattern = query:match("^fuzzy:\"(.-)\"$") or query:match("^fuzzy:(.+)$")
+		if fuzzyMatchPattern then
+			return "fuzzy", fuzzyMatchPattern
+		end
+		return "normal", query
+	end
+
+	local function fuzzyMatch(str: string, pattern: string): (boolean, number)
+		str = str:lower()
+		pattern = pattern:lower()
+		if pattern == "" then return true, 0 end
+		if str == pattern then return true, 100 end
+
+		local patternLen = #pattern
+		local strLen = #str
+		if patternLen > strLen then return false, 0 end
+
+		local patternIdx = 1
+		local score = 0
+		local consecutive = 0
+		local lastMatchIdx = 0
+
+		for i = 1, strLen do
+			local c = str:sub(i, i)
+			local pc = pattern:sub(patternIdx, patternIdx)
+			if c == pc then
+				patternIdx = patternIdx + 1
+				local distance = i - lastMatchIdx
+				if distance == 1 then
+					consecutive = consecutive + 1
+					score = score + 10 + (consecutive * 5)
+				else
+					consecutive = 0
+					score = score + 10 - distance
+				end
+				lastMatchIdx = i
+				if patternIdx > patternLen then
+					return true, score
+				end
+			end
+		end
+		return false, 0
+	end
+
 	local searchFilters = {
 		Code = true,
 		Path = true,
@@ -492,34 +543,73 @@ local function main()
 		return nil
 	end
 
-	local function entryMatchesFilter(entry, source, query)
-		local loweredQuery = tostring(query or ""):lower()
-		local path = tostring(entry.Path or ""):lower()
-		local name = tostring(entry.Name or ""):lower()
-		local className = tostring(entry.ClassName or ""):lower()
-		local loweredSource = tostring(source or ""):lower()
+	local function entryMatchesFilter(entry, source, rawQuery)
+		local mode, pattern = parseSearchQuery(rawQuery)
+		local path = tostring(entry.Path or "")
+		local name = tostring(entry.Name or "")
+		local className = tostring(entry.ClassName or "")
 		local failed = isFailureSource(source)
 
 		if filterEnabled("Failed") and failed then
-			return loweredQuery == ""
-				or path:find(loweredQuery, 1, true) ~= nil
-				or name:find(loweredQuery, 1, true) ~= nil
-				or className:find(loweredQuery, 1, true) ~= nil
-				or loweredSource:find(loweredQuery, 1, true) ~= nil
+			if pattern == "" then return true end
+			if mode == "regex" then
+				local p = pattern:lower()
+				return pcall(string.find, path:lower(), p) or pcall(string.find, name:lower(), p) or pcall(string.find, className:lower(), p) or pcall(string.find, source:lower(), p)
+			elseif mode == "fuzzy" then
+				return fuzzyMatch(path, pattern) or fuzzyMatch(name, pattern) or fuzzyMatch(className, pattern) or fuzzyMatch(source, pattern)
+			else
+				local q = pattern:lower()
+				return path:lower():find(q, 1, true) ~= nil or name:lower():find(q, 1, true) ~= nil or className:lower():find(q, 1, true) ~= nil or source:lower():find(q, 1, true) ~= nil
+			end
 		end
 
-		if loweredQuery == "" then return false end
-		if filterEnabled("Code") and sourceHasText(source) and not failed and loweredSource:find(loweredQuery, 1, true) ~= nil then
-			return true
-		end
-		if filterEnabled("Path") and path:find(loweredQuery, 1, true) ~= nil then
-			return true
-		end
-		if filterEnabled("Name") and name:find(loweredQuery, 1, true) ~= nil then
-			return true
-		end
-		if filterEnabled("Class") and className:find(loweredQuery, 1, true) ~= nil then
-			return true
+		if pattern == "" then return false end
+
+		if mode == "regex" then
+			local p = pattern:lower()
+			if filterEnabled("Code") and sourceHasText(source) and not failed then
+				local ok, match = pcall(string.find, source:lower(), p)
+				if ok and match then return true end
+			end
+			if filterEnabled("Path") then
+				local ok, match = pcall(string.find, path:lower(), p)
+				if ok and match then return true end
+			end
+			if filterEnabled("Name") then
+				local ok, match = pcall(string.find, name:lower(), p)
+				if ok and match then return true end
+			end
+			if filterEnabled("Class") then
+				local ok, match = pcall(string.find, className:lower(), p)
+				if ok and match then return true end
+			end
+		elseif mode == "fuzzy" then
+			if filterEnabled("Code") and sourceHasText(source) and not failed then
+				if fuzzyMatch(source, pattern) then return true end
+			end
+			if filterEnabled("Path") then
+				if fuzzyMatch(path, pattern) then return true end
+			end
+			if filterEnabled("Name") then
+				if fuzzyMatch(name, pattern) then return true end
+			end
+			if filterEnabled("Class") then
+				if fuzzyMatch(className, pattern) then return true end
+			end
+		else
+			local q = pattern:lower()
+			if filterEnabled("Code") and sourceHasText(source) and not failed and source:lower():find(q, 1, true) ~= nil then
+				return true
+			end
+			if filterEnabled("Path") and path:lower():find(q, 1, true) ~= nil then
+				return true
+			end
+			if filterEnabled("Name") and name:lower():find(q, 1, true) ~= nil then
+				return true
+			end
+			if filterEnabled("Class") and className:lower():find(q, 1, true) ~= nil then
+				return true
+			end
 		end
 		return false
 	end
@@ -841,8 +931,20 @@ local function main()
 			if failedSource then
 				snippet = sourceHasText(source) and source:sub(1, 140):gsub("\r", " "):gsub("\n", " ") or "Decompile failed: empty source."
 			else
+				local mode, pattern = parseSearchQuery(query)
 				local lowerSource = source:lower()
-				local startIndex = lowerSource:find(query, 1, true) or 1
+				local startIndex = 1
+				if mode == "regex" then
+					local ok, startPos = pcall(string.find, lowerSource, pattern:lower())
+					if ok and startPos then startIndex = startPos end
+				elseif mode == "fuzzy" then
+					if pattern and pattern ~= "" then
+						local firstChar = pattern:sub(1,1):lower()
+						startIndex = lowerSource:find(firstChar, 1, true) or 1
+					end
+				else
+					startIndex = lowerSource:find(query:lower(), 1, true) or 1
+				end
 				local snippetStart = math.max(1, startIndex - 45)
 				snippet = source:sub(snippetStart, math.min(#source, startIndex + 95)):gsub("\r", " "):gsub("\n", " ")
 			end
@@ -1067,7 +1169,8 @@ local function main()
 			and not filterEnabled("Class")
 			and not filterEnabled("Failed")
 		local preferSmartHelper = smartMode and query ~= "" and not filterEnabled("Failed")
-		if (preferSmartHelper or helperOnlyCode) and searchWithHelper(query) then
+		local isSpecialMode = query:find("^re:") ~= nil or query:find("^fuzzy:") ~= nil
+		if (preferSmartHelper or helperOnlyCode or isSpecialMode) and searchWithHelper(searchBox.Text) then
 			searching = false
 			return
 		end
@@ -1091,9 +1194,9 @@ local function main()
 					local success, source = pcall(env.readfile, path)
 					if success and type(source) == "string" then
 						scanned += 1
-						if entryMatchesFilter(entry, source, query) then
+						if entryMatchesFilter(entry, source, searchBox.Text) then
 							found += 1
-							addResult(key, entry, query, source)
+							addResult(key, entry, searchBox.Text, source)
 						end
 					end
 				end

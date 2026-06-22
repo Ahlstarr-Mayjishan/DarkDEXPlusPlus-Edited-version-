@@ -11,6 +11,49 @@
 extern ULONGLONG g_last_mcp_time;
 extern std::mutex g_log_mutex;
 
+static std::string get_sync_dir() {
+    DWORD attrs = GetFileAttributesA("..\\DEX++.luau");
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return "..\\workspace_sync\\";
+    }
+    return "workspace_sync\\";
+}
+
+static std::wstring get_sync_dir_w() {
+    DWORD attrs = GetFileAttributesA("..\\DEX++.luau");
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return L"..\\workspace_sync";
+    }
+    return L"workspace_sync";
+}
+
+static std::wstring get_sync_path_w(const std::wstring& relative_path) {
+    DWORD attrs = GetFileAttributesA("..\\DEX++.luau");
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return L"..\\workspace_sync\\" + relative_path;
+    }
+    return L"workspace_sync\\" + relative_path;
+}
+
+static size_t find_header_case_insensitive(const std::string& request, const std::string& header_name) {
+    std::string lower_request = lower_copy(request);
+    std::string lower_header = lower_copy(header_name);
+    return lower_request.find(lower_header);
+}
+
+static long long get_request_place_id(const std::string& request_headers) {
+    size_t pos = find_header_case_insensitive(request_headers, "x-place-id:");
+    if (pos == std::string::npos) return 0;
+    size_t end = request_headers.find("\r\n", pos);
+    if (end == std::string::npos) end = request_headers.size();
+    std::string val_str = trim_copy(request_headers.substr(pos + 11, end - (pos + 11)));
+    try {
+        return std::stoll(val_str);
+    } catch (...) {
+        return 0;
+    }
+}
+
 RouteDispatchResult dispatch_http_routes(
     SOCKET client_socket,
     const std::string& method,
@@ -57,8 +100,10 @@ RouteDispatchResult dispatch_http_routes(
                 return RouteDispatchResult::CloseConnection;
             }
             std::lock_guard<std::mutex> lock(g_log_mutex);
-            rotate_log_if_needed("dex_server_logs.txt");
-            std::ofstream log_file("dex_server_logs.txt", std::ios::app);
+            std::string log_path = get_index_dir() + "dex_server_logs.txt";
+            rotate_log_if_needed(log_path.c_str());
+            create_directories_for_file(to_wstring(log_path));
+            std::ofstream log_file(log_path.c_str(), std::ios::app);
             if (log_file.is_open()) {
                 log_file << body << std::endl;
                 log_file.close();
@@ -84,16 +129,20 @@ RouteDispatchResult dispatch_http_routes(
             send_response(client_socket, 200, "OK", analyze_remote_logs(body), "application/json");
             return RouteDispatchResult::Handled;
         } else if (path == "/index-source" && method == "POST") {
-            send_response(client_socket, 200, "OK", index_source_payload(body));
+            long long place_id = get_request_place_id(request_data);
+            send_response(client_socket, 200, "OK", index_source_payload(body, place_id));
             return RouteDispatchResult::Handled;
         } else if (path == "/search-source" && method == "POST") {
-            send_response(client_socket, 200, "OK", search_index(body));
+            long long place_id = get_request_place_id(request_data);
+            send_response(client_socket, 200, "OK", search_index(body, place_id));
             return RouteDispatchResult::Handled;
         } else if (path == "/index-entry" && method == "POST") {
-            send_response(client_socket, 200, "OK", index_entry(body), "application/json");
+            long long place_id = get_request_place_id(request_data);
+            send_response(client_socket, 200, "OK", index_entry(body, place_id), "application/json");
             return RouteDispatchResult::Handled;
         } else if (path == "/index-status" && method == "GET") {
-            send_response(client_socket, 200, "OK", index_status());
+            long long place_id = get_request_place_id(request_data);
+            send_response(client_socket, 200, "OK", index_status(place_id));
             return RouteDispatchResult::Handled;
         } else if (path == "/tool-state" && method == "GET") {
             send_response(client_socket, 200, "OK", get_tool_state_response(), "application/json");
@@ -109,9 +158,16 @@ RouteDispatchResult dispatch_http_routes(
             return RouteDispatchResult::Handled;
         } else if (path == "/index-clear" && method == "POST") {
             std::lock_guard<std::mutex> lock(g_script_index_mutex);
-            g_script_index.clear();
-            bool saved = save_index_locked();
-            send_response(client_socket, 200, "OK", saved ? "{\"ok\":true,\"total\":0,\"persisted\":true}" : "{\"ok\":true,\"total\":0,\"persisted\":false}");
+            long long place_id = get_request_place_id(request_data);
+            clear_db_for_place(place_id);
+            for (auto it = g_script_index.begin(); it != g_script_index.end(); ) {
+                if (it->second.place_id == place_id) {
+                    it = g_script_index.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            send_response(client_socket, 200, "OK", "{\"ok\":true,\"total\":0,\"persisted\":true}");
             return RouteDispatchResult::Handled;
         } else if (path == "/api/roblox/login" && method == "POST") {
             std::lock_guard<std::mutex> lock(g_auth_mutex);
@@ -413,7 +469,7 @@ RouteDispatchResult dispatch_http_routes(
             std::string script_path = parts[0];
             std::string source_code = parts[1];
             
-            std::string local_rel = "workspace_sync\\";
+            std::string local_rel = get_sync_dir();
             for (char c : script_path) {
                 if (c == '.') {
                     local_rel += '\\';
@@ -443,16 +499,16 @@ RouteDispatchResult dispatch_http_routes(
                 client_time = 0;
             }
             
-            CreateDirectoryW(L"workspace_sync", NULL);
+            CreateDirectoryW(get_sync_dir_w().c_str(), NULL);
             std::vector<FileInfo> files;
-            scan_directory_recursive(L"workspace_sync", L"", files);
+            scan_directory_recursive(get_sync_dir_w(), L"", files);
             
             std::stringstream json;
             json << "{\"ok\":true,\"files\":[";
             bool first_file = true;
             for (const auto& file : files) {
                 if (file.last_write_time > client_time) {
-                    std::wstring full_w = L"workspace_sync\\" + to_wstring(file.relative_path);
+                    std::wstring full_w = get_sync_path_w(to_wstring(file.relative_path));
                     std::ifstream in(full_w.c_str(), std::ios::binary);
                     std::string src = "";
                     if (in.is_open()) {

@@ -25,7 +25,7 @@ def load_shell_modules() -> list[str]:
 
 def resolve_module_path(name: str, groups: dict[str, list[str]]) -> Path:
     group = next(g for g, names in groups.items() if name in names)
-    if name.endswith("Menu"):
+    if name.endswith("Menu") and name != "MainMenu":
         return ROOT / "Modules" / group / "ContextMenu" / f"{name}.luau"
     if group == "Roblox Assets Viewer":
         return ROOT / "Modules" / "Explorer" / "ContextMenu" / "Roblox Assets Viewer" / f"{name}.luau"

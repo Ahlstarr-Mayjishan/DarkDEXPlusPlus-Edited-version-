@@ -25,6 +25,9 @@ HelperServer/DEX_Helper.exe
 HelperServer/DEX_Language_Manager.exe
 HelperServer/*.db
 
+# Index files
+index_data/
+
 # Agent scratch
 scratch/
 

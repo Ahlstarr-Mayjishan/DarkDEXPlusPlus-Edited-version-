@@ -66,7 +66,10 @@ local function postToHelper(endpoint, body)
 	local success, res = pcall(req, {
 		Url = "http://localhost:" .. tostring(getHelperPort()) .. endpoint,
 		Method = "POST",
-		Headers = { ["Content-Type"] = "text/plain" },
+		Headers = { 
+			["Content-Type"] = "text/plain",
+			["X-Place-ID"] = tostring(game.PlaceId)
+		},
 		Body = body
 	})
 	if success and res and res.StatusCode == 200 then

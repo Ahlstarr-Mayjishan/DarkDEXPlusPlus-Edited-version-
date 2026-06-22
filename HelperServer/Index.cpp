@@ -1,15 +1,30 @@
 #include "Index.h"
+#include <regex>
 #include <shlobj.h>
-
-const char* INDEX_FILE_PATH = "dex_helper_index.dat";
 const char* INDEX_MAGIC = "DEXPP_INDEX_V1";
 
-std::string get_db_path() {
-    char path[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) {
-        return std::string(path) + "\\DEX++Helper\\dex_helper.db";
+std::string get_index_dir() {
+    DWORD attrs = GetFileAttributesA("..\\DEX++.luau");
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return "..\\index_data\\";
     }
-    return "dex_helper.db";
+    return "index_data\\";
+}
+
+std::wstring get_index_dir_w() {
+    DWORD attrs = GetFileAttributesA("..\\DEX++.luau");
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return L"..\\index_data";
+    }
+    return L"index_data";
+}
+
+std::string get_db_path() {
+    return get_index_dir() + "dex_helper.db";
+}
+
+std::string get_index_file_path() {
+    return get_index_dir() + "dex_helper_index.dat";
 }
 
 std::unordered_map<std::string, IndexedScript> g_script_index;
@@ -662,7 +677,7 @@ static bool write_script_to_db(const IndexedScript& entry) {
         sqlite3_free(err_msg);
     }
 
-    const char* insert_sql = "INSERT OR REPLACE INTO indexed_scripts (key, path, name, class_name, source, analysis, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?);";
+    const char* insert_sql = "INSERT OR REPLACE INTO indexed_scripts (key, place_id, path, name, class_name, source, analysis, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(g_db, insert_sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
@@ -672,12 +687,13 @@ static bool write_script_to_db(const IndexedScript& entry) {
     }
 
     sqlite3_bind_text(stmt, 1, entry.key.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, entry.path.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, entry.name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, entry.class_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, entry.source.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 6, entry.analysis.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 7, static_cast<sqlite3_int64>(entry.updated_at));
+    sqlite3_bind_int64(stmt, 2, entry.place_id);
+    sqlite3_bind_text(stmt, 3, entry.path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, entry.name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, entry.class_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, entry.source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, entry.analysis.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 8, static_cast<sqlite3_int64>(entry.updated_at));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -688,25 +704,27 @@ static bool write_script_to_db(const IndexedScript& entry) {
         return false;
     }
 
-    const char* delete_fts = "DELETE FROM indexed_scripts_fts WHERE key = ?;";
+    const char* delete_fts = "DELETE FROM indexed_scripts_fts WHERE key = ? AND place_id = ?;";
     sqlite3_stmt* stmt_del = nullptr;
     rc = sqlite3_prepare_v2(g_db, delete_fts, -1, &stmt_del, nullptr);
     if (rc == SQLITE_OK) {
         sqlite3_bind_text(stmt_del, 1, entry.key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt_del, 2, entry.place_id);
         sqlite3_step(stmt_del);
         sqlite3_finalize(stmt_del);
     } else {
         std::cerr << "write_script_to_db warning: prepare delete FTS failed: " << sqlite3_errmsg(g_db) << std::endl;
     }
 
-    const char* insert_fts = "INSERT INTO indexed_scripts_fts (key, path, name, source) VALUES (?, ?, ?, ?);";
+    const char* insert_fts = "INSERT INTO indexed_scripts_fts (key, place_id, path, name, source) VALUES (?, ?, ?, ?, ?);";
     sqlite3_stmt* stmt_fts = nullptr;
     rc = sqlite3_prepare_v2(g_db, insert_fts, -1, &stmt_fts, nullptr);
     if (rc == SQLITE_OK) {
         sqlite3_bind_text(stmt_fts, 1, entry.key.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt_fts, 2, entry.path.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt_fts, 3, entry.name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt_fts, 4, entry.source.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt_fts, 2, entry.place_id);
+        sqlite3_bind_text(stmt_fts, 3, entry.path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt_fts, 4, entry.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt_fts, 5, entry.source.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_step(stmt_fts);
         sqlite3_finalize(stmt_fts);
     } else {
@@ -729,7 +747,32 @@ static bool clear_db() {
     return true;
 }
 
-std::string index_source_payload(const std::string& body) {
+bool clear_db_for_place(long long place_id) {
+    if (!g_db && !init_db()) return false;
+    
+    sqlite3_exec(g_db, "BEGIN TRANSACTION;", nullptr, nullptr, nullptr);
+    
+    sqlite3_stmt* stmt1 = nullptr;
+    sqlite3_prepare_v2(g_db, "DELETE FROM indexed_scripts WHERE place_id = ?;", -1, &stmt1, nullptr);
+    if (stmt1) {
+        sqlite3_bind_int64(stmt1, 1, place_id);
+        sqlite3_step(stmt1);
+        sqlite3_finalize(stmt1);
+    }
+    
+    sqlite3_stmt* stmt2 = nullptr;
+    sqlite3_prepare_v2(g_db, "DELETE FROM indexed_scripts_fts WHERE place_id = ?;", -1, &stmt2, nullptr);
+    if (stmt2) {
+        sqlite3_bind_int64(stmt2, 1, place_id);
+        sqlite3_step(stmt2);
+        sqlite3_finalize(stmt2);
+    }
+    
+    sqlite3_exec(g_db, "COMMIT;", nullptr, nullptr, nullptr);
+    return true;
+}
+
+std::string index_source_payload(const std::string& body, long long place_id) {
     auto parts = split_header_payload(body, 4);
     if (parts.size() != 5 || parts[0].empty()) {
         return "{\"ok\":false,\"error\":\"invalid index payload\"}";
@@ -737,6 +780,7 @@ std::string index_source_payload(const std::string& body) {
 
     IndexedScript entry;
     entry.key = parts[0];
+    entry.place_id = place_id;
     entry.path = parts[1];
     entry.name = parts[2];
     entry.class_name = parts[3];
@@ -752,13 +796,20 @@ std::string index_source_payload(const std::string& body) {
     bool persisted = write_script_to_db(entry);
 
     std::lock_guard<std::mutex> lock(g_script_index_mutex);
-    g_script_index[entry.key] = std::move(entry);
+    std::string map_key = std::to_string(place_id) + "|" + entry.key;
+    g_script_index[map_key] = std::move(entry);
 
     size_t bytes = 0;
-    for (const auto& item : g_script_index) bytes += item.second.source.size();
+    size_t count = 0;
+    for (const auto& item : g_script_index) {
+        if (item.second.place_id == place_id) {
+            bytes += item.second.source.size();
+            count++;
+        }
+    }
 
     std::stringstream json;
-    json << "{\"ok\":true,\"total\":" << g_script_index.size()
+    json << "{\"ok\":true,\"total\":" << count
          << ",\"bytes\":" << bytes
          << ",\"updatedAt\":" << static_cast<long long>(updated_at)
          << ",\"persisted\":" << (persisted ? "true" : "false")
@@ -766,34 +817,119 @@ std::string index_source_payload(const std::string& body) {
     return json.str();
 }
 
-std::string index_status() {
+std::string index_status(long long place_id) {
     std::lock_guard<std::mutex> lock(g_script_index_mutex);
     size_t bytes = 0;
+    size_t count = 0;
     std::time_t newest = 0;
     std::time_t oldest = 0;
     bool seen = false;
-    for (const auto& item : g_script_index) bytes += item.second.source.size();
     for (const auto& item : g_script_index) {
-        std::time_t updated = item.second.updated_at;
-        if (!seen) {
-            newest = oldest = updated;
-            seen = true;
-        } else {
-            newest = std::max(newest, updated);
-            oldest = std::min(oldest, updated);
+        if (item.second.place_id == place_id) {
+            bytes += item.second.source.size();
+            count++;
+            std::time_t updated = item.second.updated_at;
+            if (!seen) {
+                newest = oldest = updated;
+                seen = true;
+            } else {
+                newest = std::max(newest, updated);
+                oldest = std::min(oldest, updated);
+            }
         }
     }
 
     std::stringstream json;
-    json << "{\"ok\":true,\"scripts\":" << g_script_index.size()
+    json << "{\"ok\":true,\"scripts\":" << count
          << ",\"bytes\":" << bytes
-         << ",\"oldestUpdatedAt\":" << static_cast<long long>(seen ? oldest : 0)
-         << ",\"newestUpdatedAt\":" << static_cast<long long>(seen ? newest : 0)
+         << ",\"oldestUpdatedAt\":" << static_cast<long long>(oldest)
+         << ",\"newestUpdatedAt\":" << static_cast<long long>(newest)
          << "}";
     return json.str();
 }
 
-std::string search_index(const std::string& body) {
+enum SearchMode {
+    MODE_NORMAL,
+    MODE_REGEX,
+    MODE_FUZZY
+};
+
+struct SearchQuery {
+    SearchMode mode = MODE_NORMAL;
+    std::string pattern;
+};
+
+SearchQuery parse_search_query(const std::string& raw_query) {
+    SearchQuery sq;
+    sq.pattern = raw_query;
+    std::string trimmed = trim_copy(raw_query);
+    if (trimmed.rfind("re:", 0) == 0) {
+        sq.mode = MODE_REGEX;
+        std::string pat = trimmed.substr(3);
+        if (pat.size() >= 2 && pat.front() == '"' && pat.back() == '"') {
+            sq.pattern = pat.substr(1, pat.size() - 2);
+        } else {
+            sq.pattern = pat;
+        }
+    } else if (trimmed.rfind("fuzzy:", 0) == 0) {
+        sq.mode = MODE_FUZZY;
+        std::string pat = trimmed.substr(6);
+        if (pat.size() >= 2 && pat.front() == '"' && pat.back() == '"') {
+            sq.pattern = pat.substr(1, pat.size() - 2);
+        } else {
+            sq.pattern = pat;
+        }
+    }
+    return sq;
+}
+
+bool fuzzy_match(const std::string& str, const std::string& pattern, int& out_score) {
+    if (pattern.empty()) {
+        out_score = 0;
+        return true;
+    }
+    std::string lower_str = lower_copy(str);
+    std::string lower_pat = lower_copy(pattern);
+    if (lower_str == lower_pat) {
+        out_score = 100;
+        return true;
+    }
+    
+    size_t pattern_len = lower_pat.size();
+    size_t str_len = lower_str.size();
+    if (pattern_len > str_len) {
+        out_score = 0;
+        return false;
+    }
+    
+    size_t pattern_idx = 0;
+    int score = 0;
+    int consecutive = 0;
+    size_t last_match_idx = 0;
+    
+    for (size_t i = 0; i < str_len; ++i) {
+        if (lower_str[i] == lower_pat[pattern_idx]) {
+            pattern_idx++;
+            int distance = static_cast<int>(i - last_match_idx);
+            if (distance == 1) {
+                consecutive++;
+                score += 10 + (consecutive * 5);
+            } else {
+                consecutive = 0;
+                score += 10 - distance;
+            }
+            last_match_idx = i;
+            if (pattern_idx >= pattern_len) {
+                out_score = score;
+                return true;
+            }
+        }
+    }
+    out_score = 0;
+    return false;
+}
+
+std::string search_index(const std::string& body, long long place_id) {
     auto parts = split_header_payload(body, 1);
     if (parts.size() != 2) {
         return "{\"ok\":false,\"error\":\"invalid search payload\",\"results\":[]}";
@@ -806,48 +942,21 @@ std::string search_index(const std::string& body) {
         limit = 80;
     }
 
-    std::string query = lower_copy(parts[1]);
-    if (query.empty()) {
+    std::string raw_query = parts[1];
+    SearchQuery sq = parse_search_query(raw_query);
+
+    if (raw_query.empty()) {
         std::lock_guard<std::mutex> lock(g_script_index_mutex);
-        return "{\"ok\":true,\"indexed\":" + std::to_string(g_script_index.size()) + ",\"total\":0,\"results\":[]}";
+        size_t count = 0;
+        for (const auto& item : g_script_index) {
+            if (item.second.place_id == place_id) count++;
+        }
+        return "{\"ok\":true,\"indexed\":" + std::to_string(count) + ",\"total\":0,\"results\":[]}";
     }
 
     if (!g_db && !init_db()) {
         return "{\"ok\":false,\"error\":\"database not initialized\",\"results\":[]}";
     }
-
-    std::string fts_query = sanitize_fts_query(query);
-    std::string like_pattern = "%" + query + "%";
-
-    std::string sql;
-    bool use_fts = !fts_query.empty();
-    if (use_fts) {
-        sql = "SELECT key, path, name, class_name, source, analysis, updated_at FROM indexed_scripts "
-              "WHERE key IN (SELECT key FROM indexed_scripts_fts WHERE indexed_scripts_fts MATCH ?) "
-              "UNION "
-              "SELECT key, path, name, class_name, source, analysis, updated_at FROM indexed_scripts "
-              "WHERE path LIKE ? OR source LIKE ? OR name LIKE ? "
-              "LIMIT ?;";
-    } else {
-        sql = "SELECT key, path, name, class_name, source, analysis, updated_at FROM indexed_scripts "
-              "WHERE path LIKE ? OR source LIKE ? OR name LIKE ? "
-              "LIMIT ?;";
-    }
-
-    sqlite3_stmt* stmt = nullptr;
-    int rc = sqlite3_prepare_v2(g_db, sql.c_str(), -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        return "{\"ok\":false,\"error\":\"prepare search query failed: " + std::string(sqlite3_errmsg(g_db)) + "\",\"results\":[]}";
-    }
-
-    int bind_idx = 1;
-    if (use_fts) {
-        sqlite3_bind_text(stmt, bind_idx++, fts_query.c_str(), -1, SQLITE_TRANSIENT);
-    }
-    sqlite3_bind_text(stmt, bind_idx++, like_pattern.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, bind_idx++, like_pattern.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, bind_idx++, like_pattern.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, bind_idx++, limit * 2);
 
     struct Hit {
         IndexedScript entry;
@@ -859,76 +968,226 @@ std::string search_index(const std::string& body) {
     };
     std::vector<Hit> hits;
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        IndexedScript entry;
-        const char* key_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        const char* path_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        const char* name_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        const char* class_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        const char* source_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        const char* analysis_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+    if (sq.mode == MODE_NORMAL) {
+        std::string query = lower_copy(raw_query);
+        std::string fts_query = sanitize_fts_query(query);
+        std::string like_pattern = "%" + query + "%";
 
-        if (key_text) entry.key = key_text;
-        if (path_text) entry.path = path_text;
-        if (name_text) entry.name = name_text;
-        if (class_text) entry.class_name = class_text;
-        if (source_text) entry.source = source_text;
-        if (analysis_text) entry.analysis = analysis_text;
+        std::string sql;
+        bool use_fts = !fts_query.empty();
+        if (use_fts) {
+            sql = "SELECT key, path, name, class_name, source, analysis, updated_at FROM indexed_scripts "
+                  "WHERE place_id = ? AND (key IN (SELECT key FROM indexed_scripts_fts WHERE place_id = ? AND indexed_scripts_fts MATCH ?) "
+                  "OR path LIKE ? OR source LIKE ? OR name LIKE ?) "
+                  "LIMIT ?;";
+        } else {
+            sql = "SELECT key, path, name, class_name, source, analysis, updated_at FROM indexed_scripts "
+                  "WHERE place_id = ? AND (path LIKE ? OR source LIKE ? OR name LIKE ?) "
+                  "LIMIT ?;";
+        }
 
-        entry.updated_at = static_cast<std::time_t>(sqlite3_column_int64(stmt, 6));
-        entry.lower_source = lower_copy(entry.source);
-        entry.lower_path = lower_copy(entry.path);
-        entry.top_identifiers = top_identifiers(entry.source, 12);
+        sqlite3_stmt* stmt = nullptr;
+        int rc = sqlite3_prepare_v2(g_db, sql.c_str(), -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            return "{\"ok\":false,\"error\":\"prepare search query failed: " + std::string(sqlite3_errmsg(g_db)) + "\",\"results\":[]}";
+        }
 
-        size_t path_pos = entry.lower_path.find(query);
-        size_t source_pos = entry.lower_source.find(query);
-        std::string lower_name = lower_copy(entry.name);
-        size_t name_pos = lower_name.find(query);
-        std::string matched_identifier;
-        size_t identifier_pos = std::string::npos;
-        for (const auto& identifier : entry.top_identifiers) {
-            std::string lower_identifier = lower_copy(identifier_name(identifier));
-            if (lower_identifier.find(query) != std::string::npos || query.find(lower_identifier) != std::string::npos) {
-                identifier_pos = entry.lower_source.find(lower_identifier);
-                matched_identifier = identifier;
-                break;
+        int bind_idx = 1;
+        sqlite3_bind_int64(stmt, bind_idx++, place_id);
+        if (use_fts) {
+            sqlite3_bind_int64(stmt, bind_idx++, place_id);
+            sqlite3_bind_text(stmt, bind_idx++, fts_query.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        sqlite3_bind_text(stmt, bind_idx++, like_pattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, bind_idx++, like_pattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, bind_idx++, like_pattern.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, bind_idx++, limit * 2);
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            IndexedScript entry;
+            const char* key_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            entry.place_id = place_id;
+            const char* path_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            const char* name_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            const char* class_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+            const char* source_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+            const char* analysis_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+
+            if (key_text) entry.key = key_text;
+            if (path_text) entry.path = path_text;
+            if (name_text) entry.name = name_text;
+            if (class_text) entry.class_name = class_text;
+            if (source_text) entry.source = source_text;
+            if (analysis_text) entry.analysis = analysis_text;
+
+            entry.updated_at = static_cast<std::time_t>(sqlite3_column_int64(stmt, 6));
+            entry.lower_source = lower_copy(entry.source);
+            entry.lower_path = lower_copy(entry.path);
+            entry.top_identifiers = top_identifiers(entry.source, 12);
+
+            size_t path_pos = entry.lower_path.find(query);
+            size_t source_pos = entry.lower_source.find(query);
+            std::string lower_name = lower_copy(entry.name);
+            size_t name_pos = lower_name.find(query);
+            std::string matched_identifier;
+            size_t identifier_pos = std::string::npos;
+            for (const auto& identifier : entry.top_identifiers) {
+                std::string lower_identifier = lower_copy(identifier_name(identifier));
+                if (lower_identifier.find(query) != std::string::npos || query.find(lower_identifier) != std::string::npos) {
+                    identifier_pos = entry.lower_source.find(lower_identifier);
+                    matched_identifier = identifier;
+                    break;
+                }
+            }
+
+            if (path_pos == std::string::npos && source_pos == std::string::npos && name_pos == std::string::npos && identifier_pos == std::string::npos) {
+                int score = 5;
+                hits.push_back({std::move(entry), score, 0, "source", query, confidence_for_match("source", score)});
+                continue;
+            }
+
+            int score = 10;
+            if (path_pos != std::string::npos) score += 30;
+            if (source_pos != std::string::npos) score += 15;
+            if (name_pos == 0 && lower_name == query) score += 40;
+            else if (name_pos != std::string::npos) score += 20;
+            if (identifier_pos != std::string::npos) score += 25;
+
+            std::string match_type = "source";
+            size_t pos = source_pos != std::string::npos ? source_pos : 0;
+            std::string matched_token = query;
+            if (path_pos != std::string::npos) {
+                match_type = "path";
+                pos = source_pos != std::string::npos ? source_pos : 0;
+            }
+            if (identifier_pos != std::string::npos) {
+                match_type = "identifier";
+                matched_token = matched_identifier;
+                if (source_pos != std::string::npos) pos = source_pos;
+            }
+            if (name_pos != std::string::npos) {
+                match_type = "name";
+                matched_token = entry.name;
+                if (source_pos != std::string::npos) pos = source_pos;
+            }
+
+            hits.push_back({std::move(entry), score, pos, match_type, matched_token, confidence_for_match(match_type, score)});
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        std::regex reg;
+        bool regex_valid = false;
+        if (sq.mode == MODE_REGEX) {
+            try {
+                reg = std::regex(sq.pattern, std::regex_constants::ECMAScript | std::regex_constants::icase);
+                regex_valid = true;
+            } catch (...) {
+                return "{\"ok\":false,\"error\":\"invalid regular expression pattern\",\"results\":[]}";
             }
         }
 
-        if (path_pos == std::string::npos && source_pos == std::string::npos && name_pos == std::string::npos && identifier_pos == std::string::npos) {
-            int score = 5;
-            hits.push_back({std::move(entry), score, 0, "source", query, confidence_for_match("source", score)});
-            continue;
+        std::string sql = "SELECT key, path, name, class_name, source, analysis, updated_at FROM indexed_scripts WHERE place_id = ?;";
+        sqlite3_stmt* stmt = nullptr;
+        int rc = sqlite3_prepare_v2(g_db, sql.c_str(), -1, &stmt, nullptr);
+        if (rc != SQLITE_OK) {
+            return "{\"ok\":false,\"error\":\"prepare search query failed: " + std::string(sqlite3_errmsg(g_db)) + "\",\"results\":[]}";
         }
+        sqlite3_bind_int64(stmt, 1, place_id);
 
-        int score = 10;
-        if (path_pos != std::string::npos) score += 30;
-        if (source_pos != std::string::npos) score += 15;
-        if (name_pos == 0 && lower_name == query) score += 40;
-        else if (name_pos != std::string::npos) score += 20;
-        if (identifier_pos != std::string::npos) score += 25;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            IndexedScript entry;
+            const char* key_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            entry.place_id = place_id;
+            const char* path_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            const char* name_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+            const char* class_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+            const char* source_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+            const char* analysis_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
 
-        std::string match_type = "source";
-        size_t pos = source_pos != std::string::npos ? source_pos : 0;
-        std::string matched_token = query;
-        if (path_pos != std::string::npos) {
-            match_type = "path";
-            pos = source_pos != std::string::npos ? source_pos : 0;
-        }
-        if (identifier_pos != std::string::npos) {
-            match_type = "identifier";
-            matched_token = matched_identifier;
-            if (source_pos != std::string::npos) pos = source_pos;
-        }
-        if (name_pos != std::string::npos) {
-            match_type = "name";
-            matched_token = entry.name;
-            if (source_pos != std::string::npos) pos = source_pos;
-        }
+            if (key_text) entry.key = key_text;
+            if (path_text) entry.path = path_text;
+            if (name_text) entry.name = name_text;
+            if (class_text) entry.class_name = class_text;
+            if (source_text) entry.source = source_text;
+            if (analysis_text) entry.analysis = analysis_text;
 
-        hits.push_back({std::move(entry), score, pos, match_type, matched_token, confidence_for_match(match_type, score)});
+            entry.updated_at = static_cast<std::time_t>(sqlite3_column_int64(stmt, 6));
+            entry.lower_source = lower_copy(entry.source);
+            entry.lower_path = lower_copy(entry.path);
+
+            bool matched = false;
+            int score = 0;
+            size_t pos = 0;
+            std::string match_type = "source";
+            std::string matched_token = "";
+
+            if (sq.mode == MODE_REGEX && regex_valid) {
+                std::smatch match_path;
+                std::smatch match_name;
+                std::smatch match_source;
+                bool path_ok = std::regex_search(entry.path, match_path, reg);
+                bool name_ok = std::regex_search(entry.name, match_name, reg);
+                bool source_ok = std::regex_search(entry.source, match_source, reg);
+
+                if (path_ok || name_ok || source_ok) {
+                    matched = true;
+                    if (name_ok) {
+                        score += 50;
+                        match_type = "name";
+                        matched_token = match_name.str();
+                    }
+                    if (path_ok) {
+                        score += 40;
+                        if (match_type == "source") {
+                            match_type = "path";
+                            matched_token = match_path.str();
+                        }
+                    }
+                    if (source_ok) {
+                        score += 25;
+                        pos = match_source.position();
+                        if (match_type == "source") {
+                            matched_token = match_source.str();
+                        }
+                    }
+                }
+            } else if (sq.mode == MODE_FUZZY) {
+                int path_score = 0;
+                int name_score = 0;
+                int source_score = 0;
+                bool path_ok = fuzzy_match(entry.path, sq.pattern, path_score);
+                bool name_ok = fuzzy_match(entry.name, sq.pattern, name_score);
+                bool source_ok = false;
+                if (entry.source.size() < 100000) {
+                    source_ok = fuzzy_match(entry.source, sq.pattern, source_score);
+                }
+
+                if (path_ok || name_ok || source_ok) {
+                    matched = true;
+                    score = std::max({path_score, name_score, source_score});
+                    if (name_score >= path_score && name_score >= source_score) {
+                        match_type = "name";
+                        matched_token = entry.name;
+                    } else if (path_score >= source_score) {
+                        match_type = "path";
+                        matched_token = entry.path;
+                    } else {
+                        match_type = "source";
+                        matched_token = sq.pattern;
+                        if (!sq.pattern.empty()) {
+                            size_t first_char_pos = entry.lower_source.find(tolower(sq.pattern[0]));
+                            pos = first_char_pos != std::string::npos ? first_char_pos : 0;
+                        }
+                    }
+                }
+            }
+
+            if (matched) {
+                hits.push_back({std::move(entry), score, pos, match_type, matched_token, confidence_for_match(match_type, score)});
+            }
+        }
+        sqlite3_finalize(stmt);
     }
-    sqlite3_finalize(stmt);
 
     std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) {
         if (a.score == b.score) return a.entry.path < b.entry.path;
@@ -938,7 +1197,9 @@ std::string search_index(const std::string& body) {
     size_t total_indexed = 0;
     {
         std::lock_guard<std::mutex> lock(g_script_index_mutex);
-        total_indexed = g_script_index.size();
+        for (const auto& item : g_script_index) {
+            if (item.second.place_id == place_id) total_indexed++;
+        }
     }
 
     std::stringstream json;
@@ -963,9 +1224,10 @@ std::string search_index(const std::string& body) {
     return json.str();
 }
 
-std::string index_entry(const std::string& key) {
+std::string index_entry(const std::string& key, long long place_id) {
     std::lock_guard<std::mutex> lock(g_script_index_mutex);
-    auto found = g_script_index.find(trim_copy(key));
+    std::string map_key = std::to_string(place_id) + "|" + trim_copy(key);
+    auto found = g_script_index.find(map_key);
     if (found == g_script_index.end()) {
         return "{\"ok\":false,\"error\":\"script not found\"}";
     }
@@ -983,6 +1245,7 @@ std::string index_entry(const std::string& key) {
          << "}";
     return json.str();
 }
+
 
 void write_field(std::ostream& out, const std::string& value) {
     out << value.size() << "\n";
@@ -1026,30 +1289,51 @@ bool init_db() {
         std::cerr << "Cannot open database: " << sqlite3_errmsg(g_db) << std::endl;
         return false;
     }
+
+    bool has_place_id = false;
+    sqlite3_stmt* check_stmt = nullptr;
+    if (sqlite3_prepare_v2(g_db, "PRAGMA table_info(indexed_scripts);", -1, &check_stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(check_stmt) == SQLITE_ROW) {
+            const char* name = reinterpret_cast<const char*>(sqlite3_column_text(check_stmt, 1));
+            if (name && std::string(name) == "place_id") {
+                has_place_id = true;
+                break;
+            }
+        }
+        sqlite3_finalize(check_stmt);
+    } else {
+        has_place_id = true; 
+    }
+
+    if (!has_place_id) {
+        sqlite3_exec(g_db, "DROP TABLE IF EXISTS indexed_scripts; DROP TABLE IF EXISTS indexed_scripts_fts;", nullptr, nullptr, nullptr);
+    }
     
     const char* sql = "CREATE TABLE IF NOT EXISTS indexed_scripts ("
-                      "key TEXT PRIMARY KEY, "
+                      "key TEXT, "
+                      "place_id INTEGER, "
                       "path TEXT, "
                       "name TEXT, "
                       "class_name TEXT, "
                       "source TEXT, "
                       "analysis TEXT, "
-                      "updated_at INTEGER"
+                      "updated_at INTEGER, "
+                      "PRIMARY KEY (key, place_id)"
                       ");";
     char* err_msg = nullptr;
     rc = sqlite3_exec(g_db, sql, nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
-        std::cerr << "SQL error creating table: " << err_msg << std::endl;
+        std::cerr << "SQL error creating table: " << (err_msg ? err_msg : "unknown") << std::endl;
         sqlite3_free(err_msg);
         return false;
     }
     
     const char* fts_sql = "CREATE VIRTUAL TABLE IF NOT EXISTS indexed_scripts_fts USING fts4("
-                          "key, path, name, source"
+                          "key, place_id, path, name, source"
                           ");";
     rc = sqlite3_exec(g_db, fts_sql, nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
-        std::cerr << "FTS4 warning: " << err_msg << std::endl;
+        std::cerr << "FTS4 warning: " << (err_msg ? err_msg : "unknown") << std::endl;
         sqlite3_free(err_msg);
     }
     return true;
@@ -1083,7 +1367,7 @@ std::string load_index_response() {
         return "{\"ok\":false,\"error\":\"could not initialize database\",\"scripts\":0}";
     }
     
-    const char* query = "SELECT key, path, name, class_name, source, analysis, updated_at FROM indexed_scripts;";
+    const char* query = "SELECT key, place_id, path, name, class_name, source, analysis, updated_at FROM indexed_scripts;";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(g_db, query, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
@@ -1096,11 +1380,12 @@ std::string load_index_response() {
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         IndexedScript entry;
         const char* key_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        const char* path_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        const char* name_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        const char* class_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        const char* source_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        const char* analysis_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        entry.place_id = sqlite3_column_int64(stmt, 1);
+        const char* path_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* name_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        const char* class_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        const char* source_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        const char* analysis_text = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
         
         if (key_text) entry.key = key_text;
         if (path_text) entry.path = path_text;
@@ -1109,13 +1394,14 @@ std::string load_index_response() {
         if (source_text) entry.source = source_text;
         if (analysis_text) entry.analysis = analysis_text;
         
-        entry.updated_at = static_cast<std::time_t>(sqlite3_column_int64(stmt, 6));
+        entry.updated_at = static_cast<std::time_t>(sqlite3_column_int64(stmt, 7));
         entry.lower_source = lower_copy(entry.source);
         entry.lower_path = lower_copy(entry.path);
         entry.top_identifiers = top_identifiers(entry.source, 12);
         
         if (!entry.key.empty()) {
-            loaded[entry.key] = std::move(entry);
+            std::string map_key = std::to_string(entry.place_id) + "|" + entry.key;
+            loaded[map_key] = std::move(entry);
             count++;
         }
     }

@@ -65,7 +65,8 @@ def build():
     module_groups = {
         "Core": [
             "Theme", "State", "Logger", "IconData", "Lib", "Console", "SettingsWindow", "ControlCenter",
-            "TaskRouter", "ThreadManager",
+            "TaskRouter", "ThreadManager", "Config", "HookManager", "DecompilerService", "HelperClient",
+            "Bypasses", "ReflectionMetadata", "Intro", "WebSocketClient", "MainMenu",
         ],
         "Explorer": [
             "Explorer", "EditMenu", "NavigationMenu", "ObjectMenu", "ScriptMenu", "InteractionMenu", "PlayerMenu", "NilInstanceMenu", "Properties", "SaveInstance", "ObjectLinks", "InstanceSerializer",
@@ -77,7 +78,7 @@ def build():
         "Search": [
             "SmartDecompiler", "Notepad", "ClientIndex", "CodeSearch",
             "SmartSearch", "DependencyGraph", "ScriptRelations",
-            "SecurityAuditor",
+            "SecurityAuditor", "SnippetLibrary",
         ],
         "Runtime": [
             "RuntimeInspector", "RemoteUsageMap", "ActivityMap",
@@ -92,7 +93,7 @@ def build():
     module_paths = {}
     for group, names in module_groups.items():
         for name in names:
-            if name.endswith("Menu"):
+            if name.endswith("Menu") and name != "MainMenu":
                 module_paths[name] = os.path.join("Modules", group, "ContextMenu", f"{name}.luau")
             elif group == "Roblox Assets Viewer":
                 module_paths[name] = os.path.join("Modules", "Explorer", "ContextMenu", "Roblox Assets Viewer", f"{name}.luau")

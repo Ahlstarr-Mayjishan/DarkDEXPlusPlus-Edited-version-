@@ -11,5 +11,9 @@ taskkill /IM Decompiler.exe /F >nul 2>nul
 del /Q "%~dp0dex_helper_index.dat" >nul 2>nul
 del /Q "%~dp0dex_server_logs.txt" >nul 2>nul
 del /Q "%~dp0dex_server_logs.txt.old" >nul 2>nul
+del /Q "%~dp0..\index_data\dex_helper_index.dat" >nul 2>nul
+del /Q "%~dp0..\index_data\dex_helper.db" >nul 2>nul
+del /Q "%~dp0..\index_data\dex_server_logs.txt" >nul 2>nul
+del /Q "%~dp0..\index_data\dex_server_logs.txt.old" >nul 2>nul
 echo Helper local data was cleaned.
 timeout /t 2 >nul

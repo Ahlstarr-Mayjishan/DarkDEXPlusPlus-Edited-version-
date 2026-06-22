@@ -170,9 +170,9 @@ void schedule_local_shutdown(bool clean_data) {
                 std::lock_guard<std::mutex> lock(g_tool_state_mutex);
                 g_tool_state_json = "{\"ok\":true,\"tools\":{},\"updatedAt\":0}";
             }
-            std::remove(INDEX_FILE_PATH);
-            std::remove("dex_server_logs.txt");
-            std::remove("dex_server_logs.txt.old");
+            std::remove(get_index_file_path().c_str());
+            std::remove((get_index_dir() + "dex_server_logs.txt").c_str());
+            std::remove((get_index_dir() + "dex_server_logs.txt.old").c_str());
         }
         ExitProcess(0);
     }).detach();

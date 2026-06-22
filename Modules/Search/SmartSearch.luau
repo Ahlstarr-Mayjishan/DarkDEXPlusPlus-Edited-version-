@@ -41,15 +41,101 @@ local function main()
 		end
 	end
 	local function normalize(text) return tostring(text or ""):lower() end
-	local function scoreLive(obj, query)
-		local name, className, path = normalize(obj.Name), normalize(obj.ClassName), normalize(getPath(obj))
+
+	local function parseSearchQuery(rawQuery: string): (string, string)
+		local query = rawQuery:match("^%s*(.-)%s*$") or rawQuery
+		local reMatch = query:match("^re:\"(.-)\"$") or query:match("^re:(.+)$")
+		if reMatch then
+			return "regex", reMatch
+		end
+		local fuzzyMatchPattern = query:match("^fuzzy:\"(.-)\"$") or query:match("^fuzzy:(.+)$")
+		if fuzzyMatchPattern then
+			return "fuzzy", fuzzyMatchPattern
+		end
+		return "normal", query
+	end
+
+	local function fuzzyMatch(str: string, pattern: string): (boolean, number)
+		str = str:lower()
+		pattern = pattern:lower()
+		if pattern == "" then return true, 0 end
+		if str == pattern then return true, 100 end
+
+		local patternLen = #pattern
+		local strLen = #str
+		if patternLen > strLen then return false, 0 end
+
+		local patternIdx = 1
 		local score = 0
-		if name == query then score += 80 elseif name:find(query,1,true) then score += 45 end
-		if className == query then score += 35 elseif className:find(query,1,true) then score += 18 end
-		if path:find(query,1,true) then score += 10 end
-		if remoteClasses[obj.ClassName] then score += 12 end
-		if obj:IsA("LuaSourceContainer") then score += 8 end
-		return score
+		local consecutive = 0
+		local lastMatchIdx = 0
+
+		for i = 1, strLen do
+			local c = str:sub(i, i)
+			local pc = pattern:sub(patternIdx, patternIdx)
+			if c == pc then
+				patternIdx = patternIdx + 1
+				local distance = i - lastMatchIdx
+				if distance == 1 then
+					consecutive = consecutive + 1
+					score = score + 10 + (consecutive * 5)
+				else
+					consecutive = 0
+					score = score + 10 - distance
+				end
+				lastMatchIdx = i
+				if patternIdx > patternLen then
+					return true, score
+				end
+			end
+		end
+		return false, 0
+	end
+
+	local function scoreLive(obj, rawQuery)
+		local mode, pattern = parseSearchQuery(rawQuery)
+		local name, className, path = obj.Name, obj.ClassName, getPath(obj)
+
+		if mode == "regex" then
+			local lowerPat = pattern:lower()
+			local nOk = pcall(string.find, name:lower(), lowerPat)
+			local cOk = pcall(string.find, className:lower(), lowerPat)
+			local pOk = pcall(string.find, path:lower(), lowerPat)
+
+			local score = 0
+			if nOk then score += 45 end
+			if cOk then score += 18 end
+			if pOk then score += 10 end
+			if score > 0 then
+				if remoteClasses[className] then score += 12 end
+				if obj:IsA("LuaSourceContainer") then score += 8 end
+			end
+			return score
+		elseif mode == "fuzzy" then
+			local nOk, nScore = fuzzyMatch(name, pattern)
+			local cOk, cScore = fuzzyMatch(className, pattern)
+			local pOk, pScore = fuzzyMatch(path, pattern)
+
+			local score = 0
+			if nOk then score += nScore * 0.6 end
+			if cOk then score += cScore * 0.3 end
+			if pOk then score += pScore * 0.1 end
+			if score > 0 then
+				if remoteClasses[className] then score += 12 end
+				if obj:IsA("LuaSourceContainer") then score += 8 end
+			end
+			return score
+		else
+			local q = rawQuery:lower()
+			local n, c, p = name:lower(), className:lower(), path:lower()
+			local score = 0
+			if n == q then score += 80 elseif n:find(q, 1, true) then score += 45 end
+			if c == q then score += 35 elseif c:find(q, 1, true) then score += 18 end
+			if p:find(q, 1, true) then score += 10 end
+			if remoteClasses[className] then score += 12 end
+			if obj:IsA("LuaSourceContainer") then score += 8 end
+			return score
+		end
 	end
 	local function scriptLookup()
 		local map = {}
@@ -85,8 +171,8 @@ local function main()
 	local function search()
 		searchToken += 1
 		local token = searchToken
-		local query = normalize(queryBox.Text)
-		if query == "" then setStatus("Enter a keyword first."); clearResults(); return end
+		local query = queryBox.Text
+		if query == "" or query:match("^%s*$") then setStatus("Enter a keyword first."); clearResults(); return end
 		clearResults()
 		setStatus("Searching live client surface...")
 		window:Show()
@@ -111,7 +197,17 @@ local function main()
 				local byKey = index.GetScriptLookup()
 				for _, hit in ipairs(index.SearchCached(query, function() return token == searchToken end, 120)) do
 					local entry, scr = hit.Entry, byKey[hit.Key]
-					local hitScore = normalize(entry.Path):find(query,1,true) and 42 or 22
+					local hitScore = 22
+					local mode, pattern = parseSearchQuery(query)
+					if mode == "regex" then
+						local ok, match = pcall(string.find, tostring(entry.Path or ""):lower(), pattern:lower())
+						if ok and match then hitScore = 42 end
+					elseif mode == "fuzzy" then
+						local ok, _ = fuzzyMatch(tostring(entry.Path or ""), pattern)
+						if ok then hitScore = 42 end
+					else
+						if tostring(entry.Path or ""):lower():find(query:lower(), 1, true) then hitScore = 42 end
+					end
 					rows[#rows + 1] = {Title=tostring(entry.Path or entry.Name), Detail=hit.Snippet or "cached code hit", Kind="code", Score=hitScore, Callback=function()
 						if scr and Notepad then Notepad.ViewScript(scr) end
 					end}
@@ -120,15 +216,33 @@ local function main()
 				setStatus("Searching cached source...")
 				local byKey = scriptLookup()
 				local entries, cacheDir = env.DecompileCache.GetEntries()
+				local mode, pattern = parseSearchQuery(query)
 				for key, entry in pairs(entries) do
 					if token ~= searchToken then return end
 					if entry.File and env.isfile(cacheDir .. "/" .. tostring(entry.File)) then
 						local ok, source = pcall(env.readfile, cacheDir .. "/" .. tostring(entry.File))
-						if ok and type(source) == "string" and (source:lower():find(query,1,true) or normalize(entry.Path):find(query,1,true)) then
-							local scr = byKey[key]
-							rows[#rows + 1] = {Title=tostring(entry.Path or entry.Name), Detail="cached code hit", Kind="code", Score=22, Callback=function()
-								if scr and Notepad then Notepad.ViewScript(scr) end
-							end}
+						if ok and type(source) == "string" then
+							local lowerSource = source:lower()
+							local lowerPath = tostring(entry.Path or ""):lower()
+							local matched = false
+							if mode == "regex" then
+								local okSource, matchSource = pcall(string.find, lowerSource, pattern:lower())
+								local okPath, matchPath = pcall(string.find, lowerPath, pattern:lower())
+								matched = (okSource and matchSource ~= nil) or (okPath and matchPath ~= nil)
+							elseif mode == "fuzzy" then
+								local okSource, _ = fuzzyMatch(lowerSource, pattern)
+								local okPath, _ = fuzzyMatch(lowerPath, pattern)
+								matched = okSource or okPath
+							else
+								local q = query:lower()
+								matched = lowerSource:find(q, 1, true) ~= nil or lowerPath:find(q, 1, true) ~= nil
+							end
+							if matched then
+								local scr = byKey[key]
+								rows[#rows + 1] = {Title=tostring(entry.Path or entry.Name), Detail="cached code hit", Kind="code", Score=22, Callback=function()
+									if scr and Notepad then Notepad.ViewScript(scr) end
+								end}
+							end
 						end
 					end
 					task.wait()

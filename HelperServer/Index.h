@@ -6,7 +6,10 @@
 extern sqlite3* g_db;
 bool init_db();
 void close_db();
-extern const char* INDEX_FILE_PATH;
+std::string get_index_dir();
+std::wstring get_index_dir_w();
+std::string get_db_path();
+std::string get_index_file_path();
 extern const char* INDEX_MAGIC;
 
 struct FileInfo {
@@ -16,6 +19,7 @@ struct FileInfo {
 
 struct IndexedScript {
     std::string key;
+    long long place_id = 0;
     std::string path;
     std::string name;
     std::string class_name;
@@ -63,10 +67,11 @@ double confidence_for_match(const std::string& match_type, int score);
 std::string analyze_source(const std::string& source);
 std::string analyze_remote_logs(const std::string& logs);
 std::string assign_role(const std::string& task);
-std::string index_source_payload(const std::string& body);
-std::string index_status();
-std::string search_index(const std::string& body);
-std::string index_entry(const std::string& key);
+std::string index_source_payload(const std::string& body, long long place_id);
+std::string index_status(long long place_id);
+std::string search_index(const std::string& body, long long place_id);
+std::string index_entry(const std::string& key, long long place_id);
+bool clear_db_for_place(long long place_id);
 void write_field(std::ostream& out, const std::string& value);
 bool read_field(std::istream& in, std::string& value);
 bool save_index_locked();

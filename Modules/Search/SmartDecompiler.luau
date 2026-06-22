@@ -111,7 +111,8 @@ local function main()
 					Url = "http://localhost:8080/normalize-source",
 					Method = "POST",
 					Headers = {
-						["Content-Type"] = "text/plain"
+						["Content-Type"] = "text/plain",
+						["X-Place-ID"] = tostring(game.PlaceId)
 					},
 					Body = source
 				})

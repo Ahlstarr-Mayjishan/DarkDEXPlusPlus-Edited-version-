@@ -2053,6 +2053,21 @@ local function main()
 		window:Show()
 	end
 
+	Notepad.InsertCode = function(code)
+		if codeFrame then
+			codeFrame:AppendText(code)
+			rebuildSearch()
+			window:Show()
+		end
+	end
+
+	Notepad.GetSelectionText = function()
+		if codeFrame then
+			return codeFrame:GetSelectionText()
+		end
+		return ""
+	end
+
 	return Notepad
 end
 
