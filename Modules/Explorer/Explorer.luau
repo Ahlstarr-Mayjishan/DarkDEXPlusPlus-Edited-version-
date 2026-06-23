@@ -1371,7 +1371,7 @@ local function main()
 
 		local function ensureTool(tool)
 			if not tool then return false end
-			if tool.EnsureInit then
+			if type(tool) == "table" and tool.EnsureInit then
 				return tool.EnsureInit()
 			end
 			return true

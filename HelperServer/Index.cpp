@@ -825,7 +825,7 @@ std::string index_status(long long place_id) {
     std::time_t oldest = 0;
     bool seen = false;
     for (const auto& item : g_script_index) {
-        if (item.second.place_id == place_id) {
+        if (place_id == 0 || item.second.place_id == place_id) {
             bytes += item.second.source.size();
             count++;
             std::time_t updated = item.second.updated_at;

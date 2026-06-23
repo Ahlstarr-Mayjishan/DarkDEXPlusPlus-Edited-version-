@@ -41,7 +41,7 @@ static size_t find_header_case_insensitive(const std::string& request, const std
     return lower_request.find(lower_header);
 }
 
-static long long get_request_place_id(const std::string& request_headers) {
+long long get_request_place_id(const std::string& request_headers) {
     size_t pos = find_header_case_insensitive(request_headers, "x-place-id:");
     if (pos == std::string::npos) return 0;
     size_t end = request_headers.find("\r\n", pos);
@@ -168,6 +168,21 @@ RouteDispatchResult dispatch_http_routes(
                 }
             }
             send_response(client_socket, 200, "OK", "{\"ok\":true,\"total\":0,\"persisted\":true}");
+            return RouteDispatchResult::Handled;
+        } else if (path.rfind("/api/select-place", 0) == 0) {
+            size_t pos = path.find("placeId=");
+            if (pos != std::string::npos) {
+                try {
+                    long long pid = std::stoll(path.substr(pos + 8));
+                    {
+                        std::lock_guard<std::mutex> lock(g_tool_state_mutex);
+                        g_selected_place_id = pid;
+                    }
+                    send_response(client_socket, 200, "OK", "{\"ok\":true}", "application/json");
+                    return RouteDispatchResult::Handled;
+                } catch (...) {}
+            }
+            send_response(client_socket, 400, "Bad Request", "{\"ok\":false,\"error\":\"missing or invalid placeId\"}", "application/json");
             return RouteDispatchResult::Handled;
         } else if (path == "/api/roblox/login" && method == "POST") {
             std::lock_guard<std::mutex> lock(g_auth_mutex);

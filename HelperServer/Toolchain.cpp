@@ -5,6 +5,8 @@
 std::string g_tool_state_json = "{\"ok\":true,\"tools\":{},\"updatedAt\":0}";
 std::mutex g_tool_state_mutex;
 std::mutex g_log_mutex;
+std::map<long long, std::string> g_tool_states_map;
+long long g_selected_place_id = 0;
 
 size_t file_size_or_zero(const char* path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -188,9 +190,76 @@ std::string analyze_source_auto(const std::string& source) {
     return analyze_source(source);
 }
 
+static long long parse_place_id_from_json(const std::string& json) {
+    size_t pos = json.find("\"PlaceId\":");
+    if (pos == std::string::npos) {
+        pos = json.find("\"placeId\":");
+    }
+    if (pos != std::string::npos) {
+        size_t start = pos + 10;
+        while (start < json.size() && (std::isspace(static_cast<unsigned char>(json[start])) || json[start] == ':' || json[start] == '"')) {
+            start++;
+        }
+        size_t end = start;
+        while (end < json.size() && std::isdigit(static_cast<unsigned char>(json[end]))) {
+            end++;
+        }
+        if (end > start) {
+            try {
+                return std::stoll(json.substr(start, end - start));
+            } catch (...) {}
+        }
+    }
+    return 0;
+}
+
 std::string get_tool_state_response() {
     std::lock_guard<std::mutex> lock(g_tool_state_mutex);
-    return g_tool_state_json;
+    if (g_tool_states_map.empty()) {
+        return g_tool_state_json;
+    }
+    std::string base_json;
+    auto it = g_tool_states_map.find(g_selected_place_id);
+    if (it != g_tool_states_map.end()) {
+        base_json = it->second;
+    } else {
+        base_json = g_tool_states_map.begin()->second;
+    }
+
+    std::stringstream inst_json;
+    inst_json << ",\"instances\":[";
+    bool first = true;
+    for (const auto& pair : g_tool_states_map) {
+        if (!first) inst_json << ",";
+        first = false;
+
+        std::string name = "Roblox Game";
+        size_t name_pos = pair.second.find("\"Name\":");
+        if (name_pos == std::string::npos) {
+            name_pos = pair.second.find("\"name\":");
+        }
+        if (name_pos != std::string::npos) {
+            size_t n_start = name_pos + 7;
+            while (n_start < pair.second.size() && (std::isspace(static_cast<unsigned char>(pair.second[n_start])) || pair.second[n_start] == ':' || pair.second[n_start] == '"')) {
+                n_start++;
+            }
+            size_t n_end = n_start;
+            while (n_end < pair.second.size() && pair.second[n_end] != '"') {
+                n_end++;
+            }
+            if (n_end > n_start) {
+                name = pair.second.substr(n_start, n_end - n_start);
+            }
+        }
+        inst_json << "{\"placeId\":" << pair.first << ",\"name\":\"" << escape_json(name) << "\"}";
+    }
+    inst_json << "],\"selectedPlaceId\":" << g_selected_place_id;
+
+    size_t last_brace = base_json.find_last_of('}');
+    if (last_brace != std::string::npos) {
+        return base_json.substr(0, last_brace) + inst_json.str() + "}";
+    }
+    return base_json;
 }
 
 std::string script_status_response() {
@@ -221,9 +290,18 @@ std::string set_tool_state_response(const std::string& body) {
     if (trimmed.front() != '{') {
         return "{\"ok\":false,\"error\":\"tool state must be json object\"}";
     }
+    
+    long long place_id = parse_place_id_from_json(trimmed);
+    
     {
         std::lock_guard<std::mutex> lock(g_tool_state_mutex);
         g_tool_state_json = trimmed;
+        if (place_id != 0) {
+            g_tool_states_map[place_id] = trimmed;
+            if (g_selected_place_id == 0) {
+                g_selected_place_id = place_id;
+            }
+        }
     }
     return "{\"ok\":true}";
 }

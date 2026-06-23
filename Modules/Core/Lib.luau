@@ -495,6 +495,50 @@ local function main()
 
 	Lib.ShowGui = Main.SecureGui
 
+	Lib.applySafeAsset = function(uiElement: any, assetString: string)
+		local assetId = string.match(assetString, "%d+")
+		local customAssetFunc = getcustomasset or (env and env.getcustomasset)
+		local writefile = env and env.writefile
+		local isfile = env and env.isfile
+		local isfolder = env and env.isfolder
+		local makefolder = env and env.makefolder
+
+		if not assetId or not writefile or not isfile or not isfolder or not makefolder or not customAssetFunc or not pcall(function() return game.HttpGet end) then
+			uiElement.Image = assetString
+			return
+		end
+
+		local cacheFolder = "DexPlusPlus_Assets"
+		if not isfolder(cacheFolder) then
+			pcall(makefolder, cacheFolder)
+		end
+
+		local filePath = cacheFolder .. "/icon_" .. assetId .. ".png"
+		if isfile(filePath) then
+			local success, customAsset = pcall(customAssetFunc, filePath)
+			if success then
+				uiElement.Image = customAsset
+				return
+			end
+		end
+
+		uiElement.Image = assetString
+		task.spawn(function()
+			local proxy = "https://roproxy.com/asset/?id=%s"
+			local fetchUrl = string.format(proxy, assetId)
+			local success, imageData = pcall(game.HttpGet, game, fetchUrl)
+			if success and imageData and #imageData > 0 then
+				local writeSuccess = pcall(writefile, filePath, imageData)
+				if writeSuccess then
+					local assetSuccess, customAsset = pcall(customAssetFunc, filePath)
+					if assetSuccess then
+						uiElement.Image = customAsset
+					end
+				end
+			end
+		end)
+	end
+
 	Lib.ColorToBytes = function(col: any): string
 		local round = math.round
 		return string.format("%d, %d, %d",round(col.r*255),round(col.g*255),round(col.b*255))

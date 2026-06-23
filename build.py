@@ -66,7 +66,7 @@ def build():
         "Core": [
             "Theme", "State", "Logger", "IconData", "Lib", "Console", "SettingsWindow", "ControlCenter",
             "TaskRouter", "ThreadManager", "Config", "HookManager", "DecompilerService", "HelperClient",
-            "Bypasses", "ReflectionMetadata", "Intro", "WebSocketClient", "MainMenu",
+            "Bypasses", "ReflectionMetadata", "Intro", "WebSocketClient", "MainMenu", "LucideDockIcons",
         ],
         "Explorer": [
             "Explorer", "EditMenu", "NavigationMenu", "ObjectMenu", "ScriptMenu", "InteractionMenu", "PlayerMenu", "NilInstanceMenu", "Properties", "SaveInstance", "ObjectLinks", "InstanceSerializer",

@@ -19,21 +19,44 @@ ULONGLONG g_last_mcp_time = 0;
 #include "WsProtocol.h"
 
 std::mutex g_ws_mutex;
-SOCKET g_roblox_ws = INVALID_SOCKET;
+std::map<long long, SOCKET> g_roblox_ws_map;
 SOCKET g_dashboard_ws = INVALID_SOCKET;
 
-inline void handle_client_ws(SOCKET ClientSocket, const std::string& request_headers) {
+static long long get_request_place_id_from_path_and_headers(const std::string& path, const std::string& headers) {
+    size_t pos = path.find("placeId=");
+    if (pos != std::string::npos) {
+        size_t start = pos + 8;
+        size_t end = start;
+        while (end < path.size() && std::isdigit(static_cast<unsigned char>(path[end]))) {
+            end++;
+        }
+        if (end > start) {
+            try {
+                return std::stoll(path.substr(start, end - start));
+            } catch (...) {}
+        }
+    }
+    return get_request_place_id(headers);
+}
+
+inline void handle_client_ws(SOCKET ClientSocket, const std::string& request_headers, const std::string& path) {
     if (!perform_ws_handshake(ClientSocket, request_headers)) return;
+    
+    long long place_id = get_request_place_id_from_path_and_headers(path, request_headers);
     
     {
         std::lock_guard<std::mutex> lock(g_ws_mutex);
-        if (g_roblox_ws != INVALID_SOCKET) {
-            closesocket(g_roblox_ws);
+        auto it = g_roblox_ws_map.find(place_id);
+        if (it != g_roblox_ws_map.end()) {
+            closesocket(it->second);
         }
-        g_roblox_ws = ClientSocket;
+        g_roblox_ws_map[place_id] = ClientSocket;
+        if (g_selected_place_id == 0) {
+            g_selected_place_id = place_id;
+        }
     }
     
-    std::cout << "Roblox client connected via WebSockets." << std::endl;
+    std::cout << "Roblox client (Place ID " << place_id << ") connected via WebSockets." << std::endl;
     
     std::string payload;
     while (read_ws_text_frame(ClientSocket, payload)) {
@@ -57,12 +80,20 @@ inline void handle_client_ws(SOCKET ClientSocket, const std::string& request_hea
     
     {
         std::lock_guard<std::mutex> lock(g_ws_mutex);
-        if (g_roblox_ws == ClientSocket) {
-            g_roblox_ws = INVALID_SOCKET;
+        auto it = g_roblox_ws_map.find(place_id);
+        if (it != g_roblox_ws_map.end() && it->second == ClientSocket) {
+            g_roblox_ws_map.erase(it);
+        }
+        if (g_selected_place_id == place_id) {
+            if (!g_roblox_ws_map.empty()) {
+                g_selected_place_id = g_roblox_ws_map.begin()->first;
+            } else {
+                g_selected_place_id = 0;
+            }
         }
     }
     close_client(ClientSocket);
-    std::cout << "Roblox client disconnected." << std::endl;
+    std::cout << "Roblox client (Place ID " << place_id << ") disconnected." << std::endl;
 }
 
 inline void handle_dashboard_ws(SOCKET ClientSocket, const std::string& request_headers) {
@@ -84,15 +115,25 @@ inline void handle_dashboard_ws(SOCKET ClientSocket, const std::string& request_
         bool robloxValid = false;
         {
             std::lock_guard<std::mutex> lock(g_ws_mutex);
-            roblox = g_roblox_ws;
-            robloxValid = (roblox != INVALID_SOCKET);
+            auto it = g_roblox_ws_map.find(g_selected_place_id);
+            if (it != g_roblox_ws_map.end()) {
+                roblox = it->second;
+                robloxValid = true;
+            } else if (!g_roblox_ws_map.empty()) {
+                roblox = g_roblox_ws_map.begin()->second;
+                robloxValid = true;
+            }
         }
-        if (robloxValid) {
-            std::lock_guard<std::mutex> lock(g_ws_mutex);
-            if (g_roblox_ws == roblox) {
-                if (!send_ws_text_frame(roblox, payload)) {
-                    closesocket(g_roblox_ws);
-                    g_roblox_ws = INVALID_SOCKET;
+        if (robloxValid && roblox != INVALID_SOCKET) {
+            if (!send_ws_text_frame(roblox, payload)) {
+                std::lock_guard<std::mutex> lock(g_ws_mutex);
+                for (auto it = g_roblox_ws_map.begin(); it != g_roblox_ws_map.end(); ) {
+                    if (it->second == roblox) {
+                        closesocket(it->second);
+                        it = g_roblox_ws_map.erase(it);
+                    } else {
+                        ++it;
+                    }
                 }
             }
         }
@@ -360,8 +401,8 @@ void handle_client(SOCKET ClientSocket) {
         } else if (path == "/sync-ws" && method == "GET") {
             handle_ws_client(ClientSocket, request_data);
             return;
-        } else if (path == "/client-ws" && method == "GET") {
-            handle_client_ws(ClientSocket, request_data);
+        } else if (path.rfind("/client-ws", 0) == 0 && method == "GET") {
+            handle_client_ws(ClientSocket, request_data, path);
             return;
         } else if (path == "/dashboard-ws" && method == "GET") {
             handle_dashboard_ws(ClientSocket, request_data);

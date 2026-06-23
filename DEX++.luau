@@ -54,7 +54,7 @@ local EmbeddedModules = {
 local isFsSupported = readfile and writefile and isfile and isfolder and listfiles and delfile and delfolder
 
 -- Main vars
-local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, SnippetLibrary, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename, History, DefaultSettings, Lib, State, Logger, Config, HookManager, DecompilerService, HelperClient, Bypasses, ReflectionMetadata, Intro, WebSocketClient, MainMenu local ggv = getgenv or nil
+local Main, Explorer, Properties, Notepad, Console, SaveInstance, ModelViewer, SettingsWindow, CodeSearch, ScriptRelations, RemoteUsageMap, ObjectLinks, ImageViewer, SoundViewer, AnimationViewer, ClientIndex, ActivityMap, DependencyGraph, SmartSearch, SnippetLibrary, RuntimeInspector, ClientIntelligence, InspectorHub, TaskRouter, ControlCenter, Theme, SmartDecompiler, SecurityAuditor, RemoteFuzzer, PropertyTracker, InstanceSerializer, ThreadManager, IDESync, Clipboard, Duplicate, Deletion, PropertyCopier, PropertyRestorer, Rename, History, DefaultSettings, Lib, State, Logger, Config, HookManager, DecompilerService, HelperClient, Bypasses, ReflectionMetadata, Intro, WebSocketClient, MainMenu, LucideDockIcons local ggv = getgenv or nil
 local API, RMD
 
 -- Vars
@@ -115,7 +115,7 @@ end
 Main = (function()
 	local Main = {}
 
-	Main.ModuleList = {"Theme","State","Logger","IconData","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Config","HookManager","DecompilerService","HelperClient","Bypasses","ReflectionMetadata","Intro","WebSocketClient","MainMenu","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","SnippetLibrary","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
+	Main.ModuleList = {"Theme","State","Logger","IconData","Lib","Console","SettingsWindow","ControlCenter","TaskRouter","ThreadManager","Config","HookManager","DecompilerService","HelperClient","Bypasses","ReflectionMetadata","Intro","WebSocketClient","MainMenu","LucideDockIcons","Explorer","EditMenu","NavigationMenu","ObjectMenu","ScriptMenu","InteractionMenu","PlayerMenu","NilInstanceMenu","Properties","SaveInstance","ModelViewer","ImageViewer","SoundViewer","AnimationViewer","ObjectLinks","InstanceSerializer","SmartDecompiler","Notepad","ClientIndex","CodeSearch","SmartSearch","SnippetLibrary","DependencyGraph","ScriptRelations","SecurityAuditor","RuntimeInspector","RemoteUsageMap","ActivityMap","PropertyTracker","RemoteFuzzer","ClientIntelligence","InspectorHub","IDESync","Clipboard","Duplicate","Deletion","PropertyCopier","PropertyRestorer","Rename","History"}
 	Main.ModulePathMap = {
 		Theme = "Core/Theme",
 		State = "Core/State",
@@ -136,6 +136,7 @@ Main = (function()
 		Intro = "Core/Intro",
 		WebSocketClient = "Core/WebSocketClient",
 		MainMenu = "Core/MainMenu",
+		LucideDockIcons = "Core/LucideDockIcons",
 		Explorer = "Explorer/Explorer",
 		EditMenu = "Explorer/ContextMenu/EditMenu",
 		NavigationMenu = "Explorer/ContextMenu/NavigationMenu",

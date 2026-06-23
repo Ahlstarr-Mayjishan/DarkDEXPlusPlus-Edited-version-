@@ -9,12 +9,24 @@ Shared UI, shell, settings, task control, and safety controls.
 
 - `Theme`
 - `State`
+- `Logger`
+- `IconData`
 - `Lib`
 - `Console`
 - `SettingsWindow`
 - `ControlCenter`
 - `TaskRouter`
 - `ThreadManager`
+- `Config`
+- `HookManager`
+- `DecompilerService`
+- `HelperClient`
+- `Bypasses`
+- `ReflectionMetadata`
+- `Intro`
+- `WebSocketClient`
+- `MainMenu`
+- `LucideDockIcons`
 
 ## Explorer
 
@@ -23,10 +35,6 @@ Instance browsing, object inspection, previews, serialization, and save/export t
 - `Explorer`
 - `Properties`
 - `SaveInstance`
-- `ModelViewer`
-- `ImageViewer`
-- `SoundViewer`
-- `AnimationViewer`
 - `ObjectLinks`
 - `InstanceSerializer`
 - `Clipboard`
@@ -47,6 +55,13 @@ Instance browsing, object inspection, previews, serialization, and save/export t
 - `PlayerMenu`
 - `NilInstanceMenu`
 
+### Roblox Assets Viewer
+
+- `ModelViewer`
+- `ImageViewer`
+- `SoundViewer`
+- `AnimationViewer`
+
 ## Search
 
 Script/code search, source indexing, dependency/reference views, and code security review.
@@ -59,6 +74,7 @@ Script/code search, source indexing, dependency/reference views, and code securi
 - `DependencyGraph`
 - `ScriptRelations`
 - `SecurityAuditor`
+- `SnippetLibrary`
 
 ## Runtime
 

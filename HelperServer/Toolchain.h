@@ -4,6 +4,8 @@
 extern std::string g_tool_state_json;
 extern std::mutex g_tool_state_mutex;
 extern std::mutex g_log_mutex;
+extern std::map<long long, std::string> g_tool_states_map;
+extern long long g_selected_place_id;
 
 size_t file_size_or_zero(const char* path);
 bool file_exists(const std::string& path);

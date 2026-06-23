@@ -192,7 +192,7 @@ local function main()
 		task.spawn(function()
 			local serviceInst = game:GetService("HttpService")
 			local port = Settings.Decompiler.HelperServerPort or 8080
-			local url = "ws://localhost:" .. tostring(port) .. "/client-ws"
+			local url = "ws://localhost:" .. tostring(port) .. "/client-ws?placeId=" .. tostring(game.PlaceId)
 
 			local socket = nil
 			local function connect()

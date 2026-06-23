@@ -143,17 +143,42 @@ local function main()
 
 		local app = Main.AppTemplate:Clone()
 
-		local iconIndex = data.Icon
-		if data.IconMap and iconIndex then
-			if type(iconIndex) == "number" then
-				data.IconMap:Display(app.Main.Icon,iconIndex)
-			elseif type(iconIndex) == "string" then
-				data.IconMap:DisplayByKey(app.Main.Icon,iconIndex)
+		-- Apply icon: Lucide first, then IconMap, then raw asset, then blank
+		local iconLabel = app.Main.Icon
+		local function applyIcon()
+			local lucide = Main.LucideIcons
+			if lucide then
+				lucide.ApplyByName(iconLabel, data.Name)
+				return
 			end
-		elseif type(iconIndex) == "string" then
-			app.Main.Icon.Image = iconIndex
+			local iconIndex = data.Icon
+			if data.IconMap and iconIndex then
+				if type(iconIndex) == "number" then
+					data.IconMap:Display(iconLabel, iconIndex)
+				elseif type(iconIndex) == "string" then
+					data.IconMap:DisplayByKey(iconLabel, iconIndex)
+				end
+			elseif type(iconIndex) == "string" then
+				if Lib.applySafeAsset then
+					Lib.applySafeAsset(iconLabel, iconIndex)
+				else
+					iconLabel.Image = iconIndex
+				end
+			else
+				iconLabel.Image = ""
+			end
+		end
+
+		if Main.LucideIcons then
+			applyIcon()
 		else
-			app.Main.Icon.Image = ""
+			task.spawn(function()
+				local elapsed = 0
+				while not Main.LucideIcons and elapsed < 10 do
+					task.wait(0.1); elapsed += 0.1
+				end
+				applyIcon()
+			end)
 		end
 
 		local stroke = app.Main:FindFirstChildOfClass("UIStroke")
@@ -179,6 +204,9 @@ local function main()
 				if data.Window then data.Window:Show() end
 				if data.OnClick then data.OnClick(data.Open) end
 			end
+			if Main.UpdateDockStates then
+				Main.UpdateDockStates()
+			end
 		end
 
 		local function disable(silent)
@@ -188,6 +216,9 @@ local function main()
 			if not silent then
 				if data.Window then data.Window:Hide() end
 				if data.OnClick then data.OnClick(data.Open) end
+			end
+			if Main.UpdateDockStates then
+				Main.UpdateDockStates()
 			end
 		end
 
@@ -255,6 +286,7 @@ local function main()
 
 		control.Enable = enable
 		control.Disable = disable
+		control.IsOpen = function() return data.Open end
 		Main.MenuApps[data.Name] = control
 		return control
 	end
@@ -275,20 +307,24 @@ local function main()
 					if control then control.Disable(true) end
 					return false
 				end
-				moduleData.EnsureInit = ensureInit
+				if type(moduleData) == "table" then
+					moduleData.EnsureInit = ensureInit
+				end
 			end
 
 			if initialized then return true end
-			if moduleData.Init then
-				local ok, err = pcall(moduleData.Init)
-				if not ok then
-					warn("Failed to lazy init " .. tostring(data.Name) .. ": " .. tostring(err))
-					if control then control.Disable(true) end
-					return false
+			if type(moduleData) == "table" then
+				if not moduleData.Window and moduleData.Init then
+					local ok, err = pcall(moduleData.Init)
+					if not ok then
+						warn("Failed to lazy init " .. tostring(data.Name) .. ": " .. tostring(err))
+						if control then control.Disable(true) end
+						return false
+					end
 				end
 			end
 			initialized = true
-			if moduleData.Window then
+			if type(moduleData) == "table" and moduleData.Window then
 				moduleData.Window.OnActivate:Connect(function()
 					if control then control.Enable(true) end
 				end)
@@ -299,25 +335,24 @@ local function main()
 			return true
 		end
 
-		if moduleData then
-			moduleData.EnsureInit = ensureInit
-		end
-
 		if data.Hidden then
 			control = {
 				Enable = function(silent)
 					if not ensureInit() then return end
-					if not silent and moduleData and moduleData.Window then
+					if not silent and type(moduleData) == "table" and moduleData.Window then
 						moduleData.Window:Show()
 					end
 				end,
 				Disable = function(silent)
-					if not silent and initialized and moduleData and moduleData.Window then
+					if not silent and initialized and type(moduleData) == "table" and moduleData.Window then
 						moduleData.Window:Hide()
 					end
 				end,
 			}
 			Main.MenuApps[data.Name] = control
+			if type(moduleData) == "table" then
+				moduleData.EnsureInit = ensureInit
+			end
 			return control
 		end
 
@@ -328,28 +363,92 @@ local function main()
 			OnClick = function(open)
 				if open then
 					if not ensureInit() then return end
-					if moduleData.Window then
+					if type(moduleData) == "table" and moduleData.Window then
 						moduleData.Window:Show()
 					else
 						warn("Lazy app has no window: " .. tostring(data.Name))
 						if control then control.Disable(true) end
 					end
-				elseif initialized and moduleData and moduleData.Window then
+				elseif initialized and type(moduleData) == "table" and moduleData.Window then
 					moduleData.Window:Hide()
 				end
 			end
 		})
 
+		if type(moduleData) == "table" then
+			moduleData.EnsureInit = ensureInit
+			if moduleData.Window then
+				task.spawn(function()
+					ensureInit()
+					if moduleData.Window and moduleData.Window:IsVisible() then
+						if control then control.Enable(true) end
+					end
+				end)
+			end
+		end
+
 		return control
+	end
+
+	local dockButtons = {}
+
+	Main.UpdateDockStates = function()
+		if not Main.MainGui then return end
+		for name, btn in pairs(dockButtons) do
+			local active = false
+			if name == "Home" then
+				active = Main.MainGuiOpen
+			else
+				local control = Main.MenuApps[name]
+				if control and control.IsOpen then
+					active = control.IsOpen()
+				end
+			end
+
+			local dot = btn:FindFirstChild("DotFrame")
+			local icon = btn:FindFirstChild("Icon")
+			local hovering = Lib.CheckMouseInGui(btn)
+
+			local targetTransparency = active and 0 or (hovering and 0.15 or 0.5)
+			local targetColor = active and Color3.new(1,1,1) or (hovering and Color3.fromRGB(220, 220, 225) or Color3.fromRGB(150, 150, 155))
+
+			if icon then
+				service.TweenService:Create(icon, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+					ImageTransparency = targetTransparency,
+					ImageColor3 = targetColor
+				}):Play()
+			end
+
+			if dot then
+				local targetDotSize = active and UDim2.new(0, 4, 0, 4) or UDim2.new(0, 0, 0, 0)
+				local targetDotTransparency = active and 0 or 1
+				local dotMarker = dot:FindFirstChild("Marker")
+				local dotGlow = dot:FindFirstChild("Glow")
+
+				if dotMarker then
+					service.TweenService:Create(dotMarker, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+						Size = targetDotSize,
+						BackgroundTransparency = targetDotTransparency
+					}):Play()
+				end
+				if dotGlow then
+					service.TweenService:Create(dotGlow, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+						ImageTransparency = targetDotTransparency
+					}):Play()
+				end
+			end
+		end
 	end
 
 	Main.SetMainGuiOpen = function(val)
 		Main.MainGuiOpen = val
 
-		Main.MainGui.OpenButton.Text = "DEX++"
 		if val then Main.MainGui.OpenButton.MainFrame.Visible = true end
 		Main.MainGui.OpenButton.MainFrame:TweenSize(val and UDim2.new(0,500,0,560) or UDim2.new(0,0,0,0),Enum.EasingDirection.Out,Enum.EasingStyle.Quart,0.22,true)
-		service.TweenService:Create(Main.MainGui.OpenButton,TweenInfo.new(0.2,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{BackgroundTransparency = val and 0 or (Lib.CheckMouseInGui(Main.MainGui.OpenButton) and 0 or 0.2)}):Play()
+		
+		if Main.UpdateDockStates then
+			Main.UpdateDockStates()
+		end
 
 		if Main.MainGuiMouseEvent then Main.MainGuiMouseEvent:Disconnect() end
 		service.ContextActionService:UnbindAction("DEXPP_MenuWheel")
@@ -387,8 +486,8 @@ local function main()
 	Main.CreateMainGui = function()
 		local gui = create({
 			{1,"ScreenGui",{IgnoreGuiInset=true,Name="MainMenu",}},
-			{2,"TextButton",{AnchorPoint=Vector2.new(0.5,0),AutoButtonColor=false,BackgroundColor3=Settings.Theme.Menu,BorderSizePixel=0,Font=Enum.Font.GothamBold,Name="OpenButton",Parent={1},Position=UDim2.new(0.5,0,0,6),Size=UDim2.new(0,96,0,34),Text="DEX++",TextColor3=Settings.Theme.Text,TextSize=14,TextTransparency=0.02,}},
-			{3,"UICorner",{CornerRadius=UDim.new(0,10),Parent={2},}},
+			{2,"TextButton",{AnchorPoint=Vector2.new(0.5,0),AutoButtonColor=false,BackgroundColor3=Color3.fromRGB(11, 12, 16),BackgroundTransparency=0.35,BorderSizePixel=0,Name="OpenButton",Parent={1},Position=UDim2.new(0.5,0,0,10),Size=UDim2.new(0,480,0,48),Text="",}},
+			{3,"UICorner",{CornerRadius=UDim.new(0,24),Parent={2},}},
 			{4,"Frame",{AnchorPoint=Vector2.new(0.5,0),BackgroundColor3=Settings.Theme.Main2,ClipsDescendants=true,Name="MainFrame",Parent={2},Position=UDim2.new(0.5,0,1,8),Size=UDim2.new(0,500,0,560),}},
 			{5,"UICorner",{CornerRadius=UDim.new(0,8),Parent={4},}},
 			{6,"Frame",{BackgroundColor3=Settings.Theme.Menu,Name="BottomFrame",Parent={4},Position=UDim2.new(0,0,1,-46),Size=UDim2.new(1,0,0,46),}},
@@ -407,7 +506,7 @@ local function main()
 			{19,"ImageLabel",{BackgroundTransparency=1,Image="rbxassetid://129589545519436",ImageColor3=Settings.Theme.Text,ImageTransparency=0,ImageRectSize=Vector2.new(32,32),Name="Icon",Parent={18},Position=UDim2.new(0,14,0.5,-16),ScaleType=4,Size=UDim2.new(0,32,0,32),}},
 			{20,"TextLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderSizePixel=0,Font=Enum.Font.GothamBold,Name="AppName",Parent={18},Position=UDim2.new(0,58,0,10),Size=UDim2.new(1,-72,0,20),Text="Explorer",TextColor3=Settings.Theme.Text,TextSize=13,TextTransparency=0,TextTruncate=1,TextWrapped=false,TextXAlignment=0,}},
 			{21,"Frame",{BackgroundColor3=Settings.Theme.ListSelection,BorderSizePixel=0,Name="Highlight",Parent={18},Position=UDim2.new(0,0,0,0),Size=UDim2.new(0,3,1,0),}},
-			{22,"UIStroke",{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=Settings.Theme.Outline1,Thickness=1,Transparency=0.2,Parent={2},}},
+			{22,"UIStroke",{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=Color3.fromRGB(255, 255, 255),Thickness=1,Transparency=0.88,Parent={2},}},
 			{23,"UIStroke",{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=Settings.Theme.Outline1,Thickness=1,Transparency=0.25,Parent={4},}},
 			{24,"Frame",{BackgroundColor3=Settings.Theme.Main1,BorderSizePixel=0,Name="Header",Parent={4},Position=UDim2.new(0,0,0,0),Size=UDim2.new(1,0,0,116),}},
 			{25,"TextLabel",{BackgroundTransparency=1,Font=Enum.Font.GothamBold,Name="Title",Parent={24},Position=UDim2.new(0,18,0,12),Size=UDim2.new(1,-36,0,22),Text="DEX++ Tools",TextColor3=Settings.Theme.Text,TextSize=17,TextXAlignment=0,}},
@@ -524,7 +623,7 @@ local function main()
 		updateTabVisuals()
 
 		local openButton = gui.OpenButton
-		openButton.BackgroundTransparency = 0.2
+		openButton.BackgroundTransparency = 0.35
 		openButton.MainFrame.Size = UDim2.new(0,0,0,0)
 		openButton.MainFrame.Visible = false
 		Main.MenuSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
@@ -533,21 +632,195 @@ local function main()
 		end)
 		Main.AppsContainerGrid:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(Main.UpdateMenuCanvas)
 		Main.ScrollMenuBy = Main.SmoothScrollingFrame(Main.AppsFrame, 76)
-		openButton.MouseButton1Click:Connect(function()
-			Main.SetMainGuiOpen(not Main.MainGuiOpen)
+
+		-- Create Dock UI Items
+		local listLayout = Instance.new("UIListLayout")
+		listLayout.FillDirection = Enum.FillDirection.Horizontal
+		listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		listLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+		listLayout.Padding = UDim.new(0, 14)
+		listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		listLayout.Parent = openButton
+
+		local function toggleApp(appName)
+			local control = Main.MenuApps[appName]
+			if control then
+				if control.IsOpen() then
+					control.Disable()
+				else
+					control.Enable()
+				end
+			end
+		end
+
+		-- IconIndex refers to LargeIcons spritesheet (rbxassetid://129589545519436)
+		-- Keys: Explorer=0, Properties=1, Script_Viewer=2, Watcher=3, Output=4, ScriptEdit=5, Book=6, Executor=7, Object=8, Honey=9
+		local dockItems = {
+			{Name = "Home",             IconIndex = 9, Action = function() Main.SetMainGuiOpen(not Main.MainGuiOpen) end},
+			{Name = "Explorer",         IconIndex = 0, Action = function() toggleApp("Explorer") end},
+			{Name = "Properties",       IconIndex = 1, Action = function() toggleApp("Properties") end},
+			{Name = "Notepad",          IconIndex = 5, Action = function() toggleApp("Notepad") end},
+			{Name = "Console",          IconIndex = 4, Action = function() toggleApp("Console") end},
+			{Name = "Code Search",      IconIndex = 2, Action = function() toggleApp("Code Search") end},
+			{Name = "Snippet Library",  IconIndex = 6, Action = function() toggleApp("Snippet Library") end},
+			{Name = "Property Tracker", IconIndex = 3, Action = function() toggleApp("Property Tracker") end},
+			{Name = "Settings",         IconIndex = 8, Action = function() toggleApp("Settings") end},
+		}
+
+		table.clear(dockButtons)
+
+		for i, item in ipairs(dockItems) do
+			local btn = Instance.new("TextButton")
+			btn.Name = item.Name
+			btn.AutoButtonColor = false
+			btn.BackgroundTransparency = 1
+			btn.Size = UDim2.new(0, 36, 0, 36)
+			btn.Text = ""
+			btn.LayoutOrder = i
+			btn.Parent = openButton
+
+			local icon = Instance.new("ImageLabel")
+			icon.Name = "Icon"
+			icon.BackgroundTransparency = 1
+			icon.Size = UDim2.new(0, 32, 0, 32)
+			icon.Position = UDim2.new(0.5, 0, 0.5, -2)
+			icon.AnchorPoint = Vector2.new(0.5, 0.5)
+			icon.ImageColor3 = Color3.fromRGB(150, 150, 155)
+			icon.ImageTransparency = 0.5
+			icon.ScaleType = Enum.ScaleType.Crop
+			-- Apply Lucide icon (async, falls back to LargeIcons if no exploit API)
+			if Main.LucideIcons then
+				Main.LucideIcons.ApplyByName(icon, item.Name)
+			else
+				-- LucideIcons not ready yet, wait for it
+				task.spawn(function()
+					local t = 0
+					while not Main.LucideIcons and t < 10 do
+						task.wait(0.1)
+						t = t + 0.1
+					end
+					if Main.LucideIcons then
+						Main.LucideIcons.ApplyByName(icon, item.Name)
+					elseif Main.LargeIcons then
+						Main.LargeIcons:Display(icon, item.IconIndex)
+					end
+				end)
+			end
+			icon.Parent = btn
+
+			local dotFrame = Instance.new("Frame")
+			dotFrame.Name = "DotFrame"
+			dotFrame.BackgroundTransparency = 1
+			dotFrame.Size = UDim2.new(1, 0, 0, 8)
+			dotFrame.Position = UDim2.new(0, 0, 1, -8)
+			dotFrame.Parent = btn
+
+			local glow = Instance.new("ImageLabel")
+			glow.Name = "Glow"
+			glow.BackgroundTransparency = 1
+			glow.Image = "rbxassetid://6015886854"
+			glow.ImageColor3 = Color3.new(1, 1, 1)
+			glow.ImageTransparency = 1
+			glow.Size = UDim2.new(0, 16, 0, 16)
+			glow.Position = UDim2.new(0.5, 0, 0.5, 0)
+			glow.AnchorPoint = Vector2.new(0.5, 0.5)
+			glow.Parent = dotFrame
+
+			local marker = Instance.new("Frame")
+			marker.Name = "Marker"
+			marker.BackgroundColor3 = Color3.new(1, 1, 1)
+			marker.BackgroundTransparency = 1
+			marker.Size = UDim2.new(0, 0, 0, 0)
+			marker.Position = UDim2.new(0.5, 0, 0.5, 0)
+			marker.AnchorPoint = Vector2.new(0.5, 0.5)
+			marker.Parent = dotFrame
+
+			local mCorner = Instance.new("UICorner")
+			mCorner.CornerRadius = UDim.new(0, 2)
+			mCorner.Parent = marker
+
+			dockButtons[item.Name] = btn
+
+			btn.MouseButton1Click:Connect(item.Action)
+
+			btn.MouseEnter:Connect(function()
+				Main.UpdateDockStates()
+			end)
+
+			btn.MouseLeave:Connect(function()
+				Main.UpdateDockStates()
+			end)
+		end
+
+		-- Auto-register apps from ModuleList
+		task.spawn(function()
+			while not Apps or not Apps.Explorer or not Apps.Properties do
+				task.wait(0.1)
+			end
+			
+			local coreRegistry = {
+				{Name = "Explorer",        Module = Apps.Explorer},
+				{Name = "Properties",      Module = Apps.Properties},
+				{Name = "Notepad",         Module = Apps.Notepad},
+				{Name = "Console",         Module = Apps.Console},
+				{Name = "Settings",        Module = Apps.SettingsWindow},
+				{Name = "Code Search",     Module = Apps.CodeSearch},
+				{Name = "Snippet Library", Module = Apps.SnippetLibrary},
+				{Name = "Property Tracker",Module = Apps.PropertyTracker},
+			}
+
+			for _, reg in ipairs(coreRegistry) do
+				if reg.Module and not Main.MenuApps[reg.Name] then
+					Main.CreateLazyWindowApp({
+						Name   = reg.Name,
+						Module = reg.Module
+					})
+				end
+			end
+
+			for _, name in ipairs(Main.ModuleList) do
+				local module = Apps[name]
+				if module and not Main.MenuApps[name] then
+					local isUtility = (name == "Theme" or name == "State" or name == "Logger" or name == "IconData" or name == "Lib" or name == "Config" or name == "HookManager" or name == "DecompilerService" or name == "HelperClient" or name == "Bypasses" or name == "ReflectionMetadata" or name == "Intro" or name == "WebSocketClient" or name == "MainMenu" or name == "LucideDockIcons" or name == "History" or name == "Clipboard" or name == "Duplicate" or name == "Deletion" or name == "PropertyCopier" or name == "PropertyRestorer" or name == "Rename" or name == "SettingsWindow")
+					if not isUtility then
+						local displayName = name
+						if name == "RemoteUsageMap" then displayName = "Remote Usage"
+						elseif name == "RuntimeMonitor" then displayName = "Runtime Monitor"
+						elseif name == "RuntimeInspector" then displayName = "Runtime Inspector"
+						elseif name == "ActivityMap" then displayName = "Activity Map"
+						elseif name == "SearchCenter" then displayName = "Search Center"
+						elseif name == "ScriptRelations" then displayName = "Script Relations"
+						elseif name == "ObjectLinks" then displayName = "Object Links"
+						elseif name == "DependencyGraph" then displayName = "Dependency Graph"
+						elseif name == "SmartSearch" then displayName = "Smart Search"
+						elseif name == "ClientIntelligence" then displayName = "Client Intelligence"
+						elseif name == "InspectorHub" then displayName = "Inspector Hub"
+						elseif name == "ModelViewer" then displayName = "3D Viewer"
+						elseif name == "ImageViewer" then displayName = "Image Viewer"
+						elseif name == "SoundViewer" then displayName = "Sound Viewer"
+						elseif name == "AnimationViewer" then displayName = "Animation Viewer"
+						elseif name == "TaskRouter" then displayName = "Task Router"
+						elseif name == "ControlCenter" then displayName = "Control Center"
+						elseif name == "SecurityAuditor" then displayName = "Security Auditor"
+						elseif name == "ThreadManager" then displayName = "Thread Manager"
+						elseif name == "InstanceSerializer" then displayName = "Serialize Inst"
+						elseif name == "IDESync" then displayName = "IDE Sync"
+						elseif name == "SmartDecompiler" then displayName = "Save Instance"
+						end
+
+						Main.CreateLazyWindowApp({
+							Name   = displayName,
+							Module = module
+						})
+					end
+				end
+			end
+
+			Main.UpdateDockStates()
 		end)
 
-		openButton.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-				service.TweenService:Create(Main.MainGui.OpenButton,TweenInfo.new(0,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{BackgroundTransparency = 0}):Play()
-			end
-		end)
-
-		openButton.InputEnded:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-				service.TweenService:Create(Main.MainGui.OpenButton,TweenInfo.new(0,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{BackgroundTransparency = Main.MainGuiOpen and 0 or 0.2}):Play()
-			end
-		end)
+		Lib.ShowGui(gui)
+		Main.UpdateDockStates()
 	end
 end
 

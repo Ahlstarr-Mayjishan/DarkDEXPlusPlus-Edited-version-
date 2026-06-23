@@ -14,3 +14,5 @@ RouteDispatchResult dispatch_http_routes(
     const std::string& body,
     const std::string& request_data
 );
+
+long long get_request_place_id(const std::string& request_headers);
