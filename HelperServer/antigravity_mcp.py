@@ -30,20 +30,24 @@ def helper_base_url() -> str:
     return url
 
 
-def helper_request(path: str, body: str | None = None) -> str:
+def helper_request(path: str, body: str | None = None, place_id: int | None = None) -> str:
     data = None if body is None else body.encode("utf-8")
     if data is not None and len(data) > MAX_INPUT_BYTES:
         raise ValueError("Input is larger than the 2 MB MCP bridge limit.")
+
+    headers = {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Accept": "application/json, text/plain",
+        "X-MCP-Client": "Antigravity",
+    }
+    if place_id is not None:
+        headers["X-Place-ID"] = str(place_id)
 
     request = Request(
         helper_base_url() + path,
         data=data,
         method="POST" if data is not None else "GET",
-        headers={
-            "Content-Type": "text/plain; charset=utf-8",
-            "Accept": "application/json, text/plain",
-            "X-MCP-Client": "Antigravity",
-        },
+        headers=headers,
     )
     try:
         with urlopen(request, timeout=20) as response:
@@ -84,7 +88,16 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "dex_index_status",
         "description": "Show the current DEX++ in-memory source index statistics.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "place_id": {
+                    "type": "integer",
+                    "description": "Optional Roblox Place ID to filter statistics.",
+                }
+            },
+            "additionalProperties": False,
+        },
     },
     {
         "name": "dex_analyze_source",
@@ -130,10 +143,13 @@ def call_tool(name: str, arguments: dict[str, Any]) -> str:
         "dex_helper_status": "/status",
         "dex_worker_status": "/worker-status",
         "dex_toolchain_status": "/toolchain-status",
-        "dex_index_status": "/index-status",
     }
     if name in static_routes:
         return display_result(helper_request(static_routes[name]))
+
+    if name == "dex_index_status":
+        place_id = arguments.get("place_id")
+        return display_result(helper_request("/index-status", place_id=place_id))
 
     if name == "dex_analyze_source":
         source = arguments.get("source")
